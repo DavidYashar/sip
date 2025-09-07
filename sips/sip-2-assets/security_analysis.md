@@ -7,21 +7,21 @@ This document provides a comprehensive security analysis of the BTNFT (Bitcoin T
 ## Security Model Overview
 
 BTNFT inherits Spark's proven security model by extending the existing BTKN protocol:
-- **FROST Threshold Signing**: NFT transactions use identical SO threshold signing as BTKN tokens
-- **TTXO Security**: NFT metadata embedded within proven Token Transaction Output structure
-- **Statechain Transfers**: NFT ownership changes use existing statechain key rotation mechanisms
-- **Self-Custody**: Users maintain full control through proven BTKN cryptographic mechanisms
-- **Lightning Compatibility**: NFTs inherit Lightning Network security through existing infrastructure
+- **FROST Threshold Signing**: NFT collection, mint, and transfer transactions reuse identical SO threshold signing as BTKN tokens.
+- **Side-Car Metadata (Phase 1)**: Current design associates NFT metadata to base TokenOutputs via an index (no core proto hash changes yet). A future core update MAY embed `nft_metadata` directly once hashing implications are audited.
+- **Statechain Transfers**: NFT ownership changes use existing statechain key rotation mechanisms.
+- **Self-Custody**: Users maintain full control through proven BTKN cryptographic mechanisms.
+- **Lightning Compatibility**: NFTs inherit Lightning Network security through existing infrastructure.
 
 ## Protocol-Level Security Analysis
 
 ### 1. NFT Uniqueness Guarantees
 
 **Mechanism**:
-- Only creator can mint new NFTs in their collections
-- Max supply enforced by database constraints and SO validation  // ← Change to "SO consensus validation"
-- Collection freezing prevents further minting
-- Royalty percentages immutable after creation
+- Only creator (creator public key) can authorize new mints in a collection (signature required).
+- Max supply enforced by SO consensus validation (not a single DB constraint).
+- Collection freezing prevents further minting (if freeze flag adopted in consensus rules).
+- Royalty percentages and optional royalty recipient public key immutable after creation.
 
 **Potential Attacks**:
 - **Hash Collision**: Extremely unlikely with SHA256 (2^128 operations)
@@ -49,10 +49,10 @@ BTNFT inherits Spark's proven security model by extending the existing BTKN prot
 ### 3. Metadata Integrity
 
 **Mechanism**:
-- Essential metadata stored on-chain (collection ID, token ID, owner)
-- Rich metadata stored off-chain with URL/hash references
-- Immutable collections prevent unauthorized metadata changes
-- Creator signature required for mutable collection updates
+- Essential ownership state recorded through base TokenOutputs; descriptive NFT metadata currently side-car indexed referencing those outputs.
+- Rich media stored off-chain (IPFS/HTTP) with optional content hash references.
+- Immutable collections prevent unauthorized metadata changes.
+- Creator (or authorized updater) signature required for mutable collection updates.
 
 **Potential Attacks**:
 - **Metadata Tampering**: On-chain data protected by database integrity
@@ -64,10 +64,10 @@ BTNFT inherits Spark's proven security model by extending the existing BTKN prot
 ### 4. Collection Management
 
 **Mechanism**:
-- Only creator can mint new NFTs in their collections
-- Max supply enforced by database constraints and SO validation
-- Collection freezing prevents further minting
-- Royalty percentages immutable after creation
+- Only creator can mint new NFTs in their collections.
+- Max supply enforced by SO consensus validation.
+- Collection freezing prevents further minting.
+- Royalty percentages (and recipient key if present) immutable after creation.
 
 **Potential Attacks**:
 - **Unauthorized Minting**: Prevented by creator signature validation
@@ -92,7 +92,7 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 - **Data Inconsistency**: Local databases are caches; protocol truth remains in TTXOs and state-chain
 - **Query Performance**: Database issues may slow individual SO responses but don't affect protocol validity
 
-**Mitigation**:**Strong** - Core NFT data secured by blockchain/TTXO mechanisms, databases are auxiliary
+**Mitigation**:**Strong** - Core ownership state secured by TTXO/statechain; databases/indexers are auxiliary caching layers.
 
 ### 2. API Security
 
@@ -188,10 +188,10 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 - **Impact**: NFT attributes could be altered unexpectedly
 - **Mitigation**: Clear UI indicators for mutable vs immutable collections
 
-**3. TTXO Metadata Bloat**
-- **Risk**: Large NFT metadata could bloat TTXO size and affect performance
-- **Impact**: Increased storage costs and slower transaction processing
-- **Mitigation**: Metadata size limits enforced by protobuf validation (max 1000 chars description, 500 chars image URL)
+**3. Metadata Bloat (Side-Car / Future Embedding)**
+- **Risk**: If/when metadata becomes embedded, large fields could inflate TTXO size and impact performance.
+- **Impact**: Increased storage costs and slower transaction processing.
+- **Mitigation**: Field length caps (description ≤1000, image_url ≤500), attribute array capped (≤50), heavy media kept off-chain.
 
 **4. Lightning Channel NFT Locks**
 - **Risk**: NFTs locked in failed Lightning payments could become inaccessible
@@ -213,7 +213,7 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 ## Cryptographic Security
 
 ### Hash Functions
-- **SHA256**: Used for collection identifiers (256-bit security)
+- **SHA256**: Used for deterministic collection / token composite identifiers (256-bit security)
 - **Collision Resistance**: Computationally infeasible to find collisions
 - **Preimage Resistance**: Cannot reverse collection ID to inputs
 
@@ -262,6 +262,12 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 - Compatibility with existing Spark protocols
 - Stress testing with high transaction volumes
 - Failure mode analysis
+
+### DoS & Resource Exhaustion Controls
+- Batch Mint Cap: `mint_requests <= 50` (proto enforced) — prevents single transaction from monopolizing signing CPU, memory, and revocation distribution.
+- Attribute Count Cap: `attributes <= 50` — bounds per-item metadata expansion.
+- Field Length Caps: Description (≤1000), image_url (≤500) — mitigates oversize message amplification.
+- Future Embedding Gate: Metadata embedding deferred pending audit to avoid premature hash-surface enlargement.
 
 ### Recommended Auditors
 
@@ -372,11 +378,12 @@ BTNFT's security model is fundamentally sound due to its reliance on Spark's pro
 
 **Cryptographic Foundation**: SHA256 and ECDSA provide strong security  
 **FROST Integration**: Leverages proven threshold signature scheme  
-**Database Integrity**: PostgreSQL constraints prevent data corruption  
+**Database Integrity**: PostgreSQL / index constraints assist availability; protocol truth anchored by signed TokenTransactions  
 **Isolation**: No impact on existing Spark functionality  
 
 Areas requiring attention:
-**Off-chain Dependencies**: Standard NFT metadata risks  
+**Off-chain Dependencies**: Standard NFT metadata risks (pinning, hash verification)  
+**Future Embedding Migration**: Deterministic hash impact review before adding `nft_metadata` to core proto  
 **Market Dynamics**: Standard NFT market manipulation risks  
 **User Education**: Clear communication about mutable vs immutable collections  
 

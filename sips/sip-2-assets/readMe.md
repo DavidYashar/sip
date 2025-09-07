@@ -15,9 +15,10 @@ BTNFT represents a natural evolution of the Spark ecosystem, providing:
 ## Key Features
 
 ### Technical Architecture
-- **TTXO Metadata Embedding**: NFT data stored within existing Token Transaction Output structure
+- **Phase 1 Side-Car Metadata**: NFT descriptive metadata associated to existing TokenOutputs via an index (no change to core hashed proto yet)
+- **Future Embedding Path**: Optional `nft_metadata` field can be added to `TokenOutput` after hashing impact audit
 - **Unified Transaction Flow**: Uses same Start/Sign/Finalize pattern as BTKN tokens
-- **Collection Model**: Collections represented as special TTXOs with transferable ownership
+- **Collection Model**: Collections logically represented via designated TokenOutputs and indexed metadata (transferable authority)
 - **Lightning Integration**: NFTs flow naturally through Lightning payment channels
 
 ### NFT Capabilities
@@ -107,8 +108,10 @@ BTNFT extends existing Spark infrastructure:
 
 See detailed specifications in:
 - **[SIP-2 Proposal](./sip-2.md)**: Complete technical specification and implementation plan
-- **[Protocol Extension](./spark_nft_extension.proto)**: Protobuf definitions for NFT functionality
+- **[Protocol Extension](./spark_nft_extension.proto)**: Side-car protobuf definitions for NFT functionality (Phase 1)
 - **[Security Analysis](./security_analysis.md)**: Comprehensive security review and threat model
+
+Phase 1 delivers functionality without altering the canonical hashing of `TokenTransaction` or `TokenOutput`. A later phase may embed `nft_metadata` directly once deterministic hashing updates are coordinated with Spark Core.
 
 ## Getting Started
 

@@ -39,57 +39,35 @@ BTNFT extends the proven BTKN (Bitcoin Token) protocol by adding NFT-specific tr
 4. **Lightning Native**: NFTs flow through Lightning channels using existing infrastructure
 5. **Self-Custody**: Users maintain full control through proven cryptographic mechanisms
 
-#### NFT-Enhanced TTXO Structure
+#### NFT Metadata Association (Phase 1 Side-Car)
 
-BTNFT extends the existing TokenOutput protobuf with optional NFT metadata:
+Phase 1 does NOT modify the core `TokenOutput` hashing. NFT descriptive metadata is maintained in a side-car index referencing existing TokenOutputs. A future phase MAY embed an optional `nft_metadata` field directly once hashing implications are audited and coordinated with Spark Core.
 
+Excerpt (`spark_nft_extension.proto`):
 ```protobuf
-syntax = "proto3";
-
-package spark;
-
-import "google/protobuf/timestamp.proto";
-import "validate/validate.proto";
-
-// Enhanced TokenOutput with NFT support
-message TokenOutput {
-    // Existing BTKN fields (unchanged)
-    optional string id = 1 [(validate.rules).string.uuid = true];
-    bytes owner_public_key = 2 [(validate.rules).bytes.len = 33];
-    bytes token_public_key = 3 [(validate.rules).bytes.len = 33];
-    uint64 token_amount = 4;
-    optional bytes revocation_commitment = 5 [(validate.rules).bytes.len = 33];
-    optional uint64 withdraw_bond_sats = 6;
-    optional uint64 withdraw_relative_block_locktime = 7;
-    
-    // NEW: Optional NFT metadata (only present for NFT TTXOs)
-    optional NftMetadata nft_metadata = 10;
+message NftAttribute {
+    string trait_type = 1 [(validate.rules).string = {min_len:1, max_len:50}];
+    string value = 2 [(validate.rules).string = {min_len:1, max_len:100}];
+    optional string display_type = 3 [(validate.rules).string.max_len = 30];
 }
 
-// NFT metadata embedded within TTXO
 message NftMetadata {
-    string collection_id = 1 [(validate.rules).string = {min_len: 1, max_len: 50}];
-    string token_id = 2 [(validate.rules).string = {min_len: 1, max_len: 20}];
-    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];
+    string collection_id = 1 [(validate.rules).string = {min_len:1, max_len:50}];
+    string token_id = 2 [(validate.rules).string = {min_len:1, max_len:20}];
+    string name = 3 [(validate.rules).string = {min_len:1, max_len:100}];
     optional string description = 4 [(validate.rules).string.max_len = 1000];
     optional string image_url = 5 [(validate.rules).string.max_len = 500];
-    repeated NftAttribute attributes = 6;
-    bool is_collection_root = 7; // true for collection creation TTXOs
-    optional uint64 max_supply = 8; // collection supply limit (0 = unlimited)
+    repeated NftAttribute attributes = 6 [(validate.rules).repeated = {max_items:50}];
+    bool is_collection_root = 7;
+    optional uint64 max_supply = 8;
     optional uint32 royalty_percentage = 9 [(validate.rules).uint32.lte = 100];
-}
-
-// NFT attribute/trait definition
-message NftAttribute {
-    string trait_type = 1 [(validate.rules).string = {min_len: 1, max_len: 50}];
-    string value = 2 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    optional string display_type = 3; // "number", "date", "boost_percentage", etc.
+    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33];
 }
 ```
 
-#### Extended TokenTransaction for NFT Operations
+#### Transaction Inputs (Phase 1 Adaptation)
 
-BTNFT adds new input types to the existing TokenTransaction structure:
+Side-car messages (`NftCollectionInput`, `NftMintInput`, `NftTransferInput`) are mapped onto existing token flow via an adapter layer. Core `TokenTransaction` oneof is unchanged in Phase 1. Future integration may allocate new oneof field numbers.
 
 ```protobuf
 // Enhanced TokenTransaction with NFT support
@@ -147,20 +125,20 @@ message NftTransferInput {
 
 **1. Collection Creation**
 - **Input**: `NftCollectionInput` with collection metadata
-- **Output**: Special TTXO with `token_amount = 0` and `is_collection_root = true`
+- **Output**: Base TokenOutput (may use nominal amount) plus side-car record flagged `is_collection_root = true`
 - **Validation**: SOs ensure collection ID uniqueness per creator
 - **Result**: Collection TTXO that serves as authority for minting
 
 **2. NFT Minting**
 - **Input**: `NftMintInput` referencing collection + individual NFT metadata
 - **Validation**: SOs verify collection ownership and supply limits
-- **Output**: NFT TTXO with `token_amount = 1` and complete metadata
+- **Output**: Base TokenOutput (ownership) plus side-car metadata record
 - **Authority**: Only collection owner (or authorized minter) can mint
 
 **3. NFT Transfer**  
 - **Input**: `NftTransferInput` spending existing NFT TTXOs
 - **Process**: Identical to BTKN token transfers via statechain key rotation
-- **Output**: NFT TTXO with new owner but preserved metadata
+- **Output**: New TokenOutput (ownership) with side-car metadata unchanged
 - **Atomicity**: Multiple NFTs can be transferred in single transaction
 }
 
@@ -445,8 +423,9 @@ BTNFT extends the existing BTKN protocol rather than creating a separate system 
 4. **Development Efficiency**: Extends proven codebase rather than building from scratch
 5. **Network Effects**: NFTs immediately compatible with existing Spark ecosystem
 
-#### TTXO Metadata Embedding vs. External Storage
-Embedding NFT metadata within TTXOs provides significant advantages:
+#### TTXO Metadata Embedding vs. External Storage (Phased)
+Phase 1: side-car only (no hash change). Future: optional embedding after hashing audit.
+Embedding (future) provides advantages:
 
 **Technical Benefits**:
 - **Atomic Operations**: Metadata and ownership changes happen in single transaction
@@ -470,13 +449,17 @@ Representing collections as special TTXOs provides powerful capabilities:
 5. **Lightning Collections**: Collections can be transferred via Lightning channels
 
 #### Hybrid Metadata Strategy
-BTNFT uses a hybrid approach for metadata storage:
+Phased approach (Phase 1 side-car, potential Phase 2 embedding):
 
-**On-Chain (in TTXO)**:
-- Collection identifiers and basic metadata
-- Token IDs and essential attributes
-- Ownership and transfer history
-- Creator signatures and royalty information
+**On-Chain (Phase 1 Core)**:
+- Ownership and transfer state only (via TokenOutputs)
+
+**Side-Car Indexed (Phase 1)**:
+- Collection identifiers & descriptive metadata (royalty %, recipient pubkey, mutability flag, attributes ≤50)
+- Token IDs, attributes, images (URL) and descriptions (length-capped)
+
+**Potential Future Embedding**:
+- All side-car metadata committed directly inside TokenOutput optional field
 
 **Off-Chain (IPFS/HTTP)**:
 - Large images and media files
@@ -493,7 +476,7 @@ BTNFT introduces **zero breaking changes** to existing Spark functionality:
 **Protocol Compatibility**:
 - Existing BTKN tokens continue working unchanged
 - Same service endpoints with extended input type handling
-- TokenOutput structure extended with optional NFT metadata field
+- Phase 1 does NOT modify TokenOutput hashing; future embedding gated on audit
 - All existing validation and security mechanisms preserved
 
 **Wallet Compatibility**:
@@ -775,6 +758,21 @@ BTNFT represents a natural evolution of the Spark ecosystem, bringing native NFT
 - **Innovation Platform**: Foundation for gaming, streaming, and micropayment applications
 
 ### conclusion
+
+### Batch Mint Limit & DoS Rationale
+
+Parameter: `NftBatchMintInput.mint_requests` maximum = 50.
+
+Rationale:
+1. Performance Bound: Caps worst-case per-transaction validation and signature work to keep latency near BTKN baseline (< single signing round SLA impact).
+2. Memory Safety: Limits in-flight metadata object allocations; prevents oversized protobuf messages causing GC or allocator pressure.
+3. Fairness: Prevents a single client from monopolizing operator signing pipeline with an extreme batch.
+4. Watchtower Load: Bounds new revocation commitments per transaction, keeping watchtower diffusion predictable.
+5. Gossip / Propagation: Ensures serialized transaction + side-car references stay below target relay size, avoiding fragmentation.
+6. Supply Race Mitigation: Smaller atomic mint groups reduce contention when multiple minters race near max_supply.
+7. Audit Simplicity: Easier to reason about uniqueness & supply invariants in bounded atomic sets.
+
+Configurability: Operators MAY adopt a lower runtime cap; raising above 50 requires performance profiling + audit sign-off. SIP reserves right to revisit after embedding phase or performance optimizations.
 
 BTNFT positions the Spark state-chain beyond simple value transfer while maintaining its core principles of trustlessness and self-custody. The protocol's Lightning integration creates unique capabilities unavailable in other NFT ecosystems, potentially capturing significant market share from existing platforms.
 
