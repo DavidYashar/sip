@@ -15,23 +15,24 @@ BTNFT represents a natural evolution of the Spark ecosystem, providing:
 ## Key Features
 
 ### Technical Architecture
-- **Phase 1 Side-Car Metadata**: NFT descriptive metadata associated to existing TokenOutputs via an index (no change to core hashed proto yet)
-- **Future Embedding Path**: Optional `nft_metadata` field can be added to `TokenOutput` after hashing impact audit
-- **Unified Transaction Flow**: Uses same Start/Sign/Finalize pattern as BTKN tokens
-- **Collection Model**: Collections logically represented via designated TokenOutputs and indexed metadata (transferable authority)
-- **Lightning Integration**: NFTs flow naturally through Lightning payment channels
+- **Phase 1 Side-Car Metadata**: Descriptive metadata indexed off existing TokenOutputs (no change to hashed `TokenTransaction` / `TokenOutput`).
+- **Future Embedding Path**: Optional embedded `nft_metadata` field reserved conceptually; requires deterministic hashing audit before activation.
+- **Adapter Flow**: NFT intent messages interpreted → base transaction produced → threshold signed (core proto untouched in Phase 1).
+- **Collection Model**: Authority represented by a designated TokenOutput plus side-car record; transferable like any TTXO.
+- **Lightning Integration**: Ownership outputs, not bulk metadata, participate in conditional payment flows.
 
 ### NFT Capabilities
-- **Collection Creation**: Creators can establish NFT collections with metadata and supply limits
-- **Individual Minting**: Mint unique NFTs within collections with rich metadata support
-- **Instant Transfers**: Sub-second NFT ownership changes via Spark statechain technology
-- **Lightning Integration**: Seamless NFT transfers through Lightning payment channels
+- **Collection Creation**: Unique `(creator_pubkey, collection_id)` entries with optional supply cap, immutable royalty fields.
+- **Individual Minting**: Enforces uniqueness `(collection_id, token_id)` + supply accounting.
+- **Batch Minting**: Up to 50 NFTs atomically (DoS bounded).
+- **Instant Transfers**: Sub-second ownership changes (metadata untouched).
+- **Lightning Compatible Ownership**: Conditional transfer patterns use output references.
 
 ### Lightning Network Benefits
-- **Conditional Transfers**: NFTs can be locked pending Lightning payment completion
-- **Micropayments**: Enable pay-per-view content, streaming royalties, and micro-licensing
-- **Atomic Swaps**: Trustless NFT-for-NFT and NFT-for-Bitcoin exchanges
-- **Privacy**: Lightning privacy benefits extend to NFT transactions
+- **Conditional Ownership Moves**: Ownership outputs gated by payment preimages.
+- **Micropayment Patterns**: Streaming & pay-per-use via rapid state updates.
+- **Atomic Swaps**: Coupled signed transfer + invoice settlement.
+- **Privacy**: Only small ownership data traverses; large metadata stays off-channel.
 
 ## Architecture
 
@@ -76,7 +77,7 @@ BTNFT extends existing Spark infrastructure:
 - Documentation completion and developer guides
 - Coordinated deployment across SO network
 
-**Total Timeline: 4 weeks** from development start to mainnet deployment
+**Total Timeline: 4 weeks** from development start to mainnet deployment (approximately)
 
 ## Use Cases
 
@@ -111,7 +112,20 @@ See detailed specifications in:
 - **[Protocol Extension](./spark_nft_extension.proto)**: Side-car protobuf definitions for NFT functionality (Phase 1)
 - **[Security Analysis](./security_analysis.md)**: Comprehensive security review and threat model
 
-Phase 1 delivers functionality without altering the canonical hashing of `TokenTransaction` or `TokenOutput`. A later phase may embed `nft_metadata` directly once deterministic hashing updates are coordinated with Spark Core.
+Phase 1 delivers functionality without altering canonical hashing. Future embedding requires: (1) determinism test vectors, (2) collision/audit review, (3) migration plan ensuring legacy side-car indices remain valid.
+
+### Bounded Limits (Phase 1)
+| Item | Limit |
+|------|-------|
+| Attributes per NFT | 50 |
+| Batch mint size | 50 |
+| Description length | ≤1000 chars |
+| Image URL length | ≤500 chars |
+| Collection ID length | 1..50 |
+| Token ID length | 1..20 |
+| Royalty % | 0..100 (immutable) |
+
+Royalty recipient public key (if set) is immutable; absence implies creator.
 
 ## Getting Started
 
@@ -124,7 +138,6 @@ BTNFT will be available through existing Spark infrastructure:
 
 ## Community & Support
 
-- **Discord**: Join the [Spark Discord](https://discord.gg/spark) for discussions
 - **GitHub**: Follow development at [buildonspark/spark](https://github.com/buildonspark/spark)
 - **Documentation**: Full docs at [docs.spark.money](https://docs.spark.money)
 - **SIP Process**: Proposal tracking via [buildonspark/sip](https://github.com/buildonspark/sip)

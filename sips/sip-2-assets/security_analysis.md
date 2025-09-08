@@ -21,12 +21,12 @@ BTNFT inherits Spark's proven security model by extending the existing BTKN prot
 - Only creator (creator public key) can authorize new mints in a collection (signature required).
 - Max supply enforced by SO consensus validation (not a single DB constraint).
 - Collection freezing prevents further minting (if freeze flag adopted in consensus rules).
-- Royalty percentages and optional royalty recipient public key immutable after creation.
+- Royalty percentages (0..100) and optional royalty recipient public key immutable after collection creation (update path excludes these fields).
 
 **Potential Attacks**:
 - **Hash Collision**: Extremely unlikely with SHA256 (2^128 operations)
 - **Timestamp Manipulation**: Mitigated by SO validation of reasonable timestamps
-- **Creator Key Reuse**: Not a security issue, creators can make multiple collections
+- **Creator Key Reuse**: Not a security issue, creators can make a collection (can be extended to several NFT collection creation)
 
 **Mitigation**: **Strong** - Cryptographically secure with multiple layers
 
@@ -67,7 +67,7 @@ BTNFT inherits Spark's proven security model by extending the existing BTKN prot
 - Only creator can mint new NFTs in their collections.
 - Max supply enforced by SO consensus validation.
 - Collection freezing prevents further minting.
-- Royalty percentages (and recipient key if present) immutable after creation.
+- Royalty percentage & recipient key immutable after collection creation (cannot be altered via update).
 
 **Potential Attacks**:
 - **Unauthorized Minting**: Prevented by creator signature validation
@@ -128,10 +128,10 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 ### 4. Lightning Integration Security
 
 **Current Implementation**:
-- NFTs flow through Lightning channels as specialized BTKN tokens
+- Ownership outputs (TTXOs) referenced in conditional payment workflows (metadata side-car not transmitted)
 - Conditional NFT transfers locked by Lightning payment proofs
 - Atomic settlement using existing Lightning infrastructure
-- No changes required to Lightning Network protocol
+- No protocol changes required to Lightning Network
 
 **Potential Risks**:
 - **Channel Security**: NFT transfers inherit existing Lightning channel security model
@@ -264,7 +264,7 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 - Failure mode analysis
 
 ### DoS & Resource Exhaustion Controls
-- Batch Mint Cap: `mint_requests <= 50` (proto enforced) — prevents single transaction from monopolizing signing CPU, memory, and revocation distribution.
+- Batch Mint Cap: `mint_requests <= 50` (canonical Phase 1) — prevents a single transaction from monopolizing signing CPU, memory, and revocation distribution.
 - Attribute Count Cap: `attributes <= 50` — bounds per-item metadata expansion.
 - Field Length Caps: Description (≤1000), image_url (≤500) — mitigates oversize message amplification.
 - Future Embedding Gate: Metadata embedding deferred pending audit to avoid premature hash-surface enlargement.
@@ -281,10 +281,6 @@ BTNFT integrates with Spark by extending existing BTKN infrastructure rather tha
 - Database security experience
 - Formal verification capabilities
 
-**3. Academic Partnerships**
-- Formal verification of uniqueness guarantees
-- Cryptographic protocol analysis
-- Game theory modeling
 
 ## Incident Response Plan
 

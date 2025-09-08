@@ -41,55 +41,29 @@ BTNFT extends the proven BTKN (Bitcoin Token) protocol by adding NFT-specific tr
 
 #### NFT Metadata Association (Phase 1 Side-Car)
 
-Phase 1 does NOT modify the core `TokenOutput` hashing. NFT descriptive metadata is maintained in a side-car index referencing existing TokenOutputs. A future phase MAY embed an optional `nft_metadata` field directly once hashing implications are audited and coordinated with Spark Core.
+Phase 1 purposely does **not** alter the canonical hashing of `TokenTransaction` or `TokenOutput`. Descriptive NFT metadata is maintained in a side-car index keyed by `(collection_id, token_id)` and/or the owning output id. Ownership remains purely the base TTXO. A future phase MAY embed an optional `nft_metadata` field directly (reserved concept only) after a hashing determinism + audit review.
 
-Excerpt (`spark_nft_extension.proto`):
+Canonical excerpt (current side‑car spec from `spark_nft_extension.proto` – truncated for brevity):
 ```protobuf
-message NftAttribute {
-    string trait_type = 1 [(validate.rules).string = {min_len:1, max_len:50}];
-    string value = 2 [(validate.rules).string = {min_len:1, max_len:100}];
-    optional string display_type = 3 [(validate.rules).string.max_len = 30];
-}
-
 message NftMetadata {
-    string collection_id = 1 [(validate.rules).string = {min_len:1, max_len:50}];
-    string token_id = 2 [(validate.rules).string = {min_len:1, max_len:20}];
-    string name = 3 [(validate.rules).string = {min_len:1, max_len:100}];
-    optional string description = 4 [(validate.rules).string.max_len = 1000];
-    optional string image_url = 5 [(validate.rules).string.max_len = 500];
-    repeated NftAttribute attributes = 6 [(validate.rules).repeated = {max_items:50}];
+    string collection_id = 1;            // 1..50 chars
+    string token_id = 2;                 // 1..20 chars
+    string name = 3;                     // 1..100 chars
+    optional string description = 4;     // ≤1000 chars
+    optional string image_url = 5;       // ≤500 chars
+    repeated NftAttribute attributes = 6; // ≤50 entries
     bool is_collection_root = 7;
-    optional uint64 max_supply = 8;
-    optional uint32 royalty_percentage = 9 [(validate.rules).uint32.lte = 100];
-    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33];
+    optional uint64 max_supply = 8;      // 0 = unlimited
+    optional uint32 royalty_percentage = 9; // 0..100 (immutable)
+    optional bytes royalty_recipient_public_key = 10; // 33B if present
 }
 ```
 
+All limits enforced via protoc-gen-validate annotations; they bound worst-case parsing & validation complexity and underpin DoS rationale.
+
 #### Transaction Inputs (Phase 1 Adaptation)
 
-Side-car messages (`NftCollectionInput`, `NftMintInput`, `NftTransferInput`) are mapped onto existing token flow via an adapter layer. Core `TokenTransaction` oneof is unchanged in Phase 1. Future integration may allocate new oneof field numbers.
-
-```protobuf
-// Enhanced TokenTransaction with NFT support
-message TokenTransaction {
-    uint32 version = 1;
-    
-    oneof token_inputs {
-        MintInput mint_input = 2;                       // Existing: BTKN token minting
-        TransferInput transfer_input = 3;               // Existing: BTKN token transfers
-        NftCollectionInput nft_collection_input = 4;    // NEW: NFT collection creation
-        NftMintInput nft_mint_input = 5;                // NEW: NFT minting within collection
-        NftTransferInput nft_transfer_input = 6;        // NEW: NFT ownership transfers
-    }
-    
-    repeated TokenOutput token_outputs = 7; // Same outputs, some contain nft_metadata
-    repeated bytes spark_operator_identity_public_keys = 8
-        [(validate.rules).repeated .items.bytes.len = 33];
-    google.protobuf.Timestamp expiry_time = 9;
-    Network network = 10 [(validate.rules).enum = { not_in: [ 0 ] }];
-    google.protobuf.Timestamp client_created_timestamp = 11;
-}
-
+In Phase 1 the *core* `TokenTransaction` proto (hash surface) is **unchanged**. NFT intent messages (`NftCollectionInput`, `NftMintInput`, `NftBatchMintInput`, `NftTransferInput`, `NftCollectionUpdateInput`) exist only in the side-car extension file. An adapter layer interprets them and produces a standard base `TokenTransaction` for signing. Any snippet showing embedded NFT oneof arms in `TokenTransaction` refers to a **future embedding phase** and is intentionally removed here to avoid ambiguity.
 // NFT Collection Creation Input
 message NftCollectionInput {
     bytes creator_public_key = 1 [(validate.rules).bytes.len = 33];
@@ -135,12 +109,16 @@ message NftTransferInput {
 - **Output**: Base TokenOutput (ownership) plus side-car metadata record
 - **Authority**: Only collection owner (or authorized minter) can mint
 
-**3. NFT Transfer**  
+**3. NFT Transfer**
 - **Input**: `NftTransferInput` spending existing NFT TTXOs
 - **Process**: Identical to BTKN token transfers via statechain key rotation
 - **Output**: New TokenOutput (ownership) with side-car metadata unchanged
 - **Atomicity**: Multiple NFTs can be transferred in single transaction
-}
+
+**4. Batch Mint (Optional Efficiency)**
+- **Input**: `NftBatchMintInput` with up to 50 `NftMintInput` entries
+- **Validation**: All uniqueness & supply checks applied per element; failure of any aborts entire batch
+- **Result**: Atomic creation of multiple NFT outputs (side-car metadata entries)
 
 #### Service Integration with Existing BTKN Infrastructure
 
@@ -169,65 +147,87 @@ func (s *SparkService) StartTokenTransaction(req *StartTokenTransactionRequest) 
 2. **SignTokenTransaction()**: SOs validate and provide threshold signatures  
 3. **FinalizeTokenTransaction()**: Client provides revocation keys, transaction confirmed
 
-#### Uniqueness and Validation Mechanisms
+#### Identifiers & Uniqueness (Phase 1)
 
-**Collection Uniqueness**: 
-- `collection_id` must be unique per `creator_public_key`
-- SOs maintain index of existing collections during validation
-- Hash verification: `collection_key = hash(creator_pubkey || collection_id || nonce)`
+Phase 1 identifier of a collection = `(creator_public_key, collection_id:string)` with `collection_id` length ≤50. A future optimization MAY introduce a 32‑byte `collection_identifier = SHA256(creator_pubkey || collection_id || nonce)`; until adopted it remains non-normative.
 
-**NFT Uniqueness**:
-- `token_id` must be unique within each collection
-- Enforced at SO validation level during minting
-- Global uniqueness: `collection_token_public_key + token_id`
+Uniqueness rules:
+1. Collection: No duplicate `(creator_public_key, collection_id)`.
+2. NFT: Pair `(collection_id, token_id)` must not exist prior to mint/batch mint.
+3. Supply: If `max_supply > 0`, `current_minted + requested_mints <= max_supply`.
+4. Royalty: `royalty_percentage (0..100)` & optional `royalty_recipient_public_key` immutable post-creation.
 
-**Supply Enforcement**:
-- SOs track minted count against `max_supply` in collection metadata
-- Minting rejected if supply limit exceeded
-- Supply tracking via LRC-20 node consensus
+##### State Structures (Conceptual)
+```
+CollectionRecord {
+    creator_pubkey: Bytes33
+    collection_id: String<=50
+    max_supply: uint64 (0 = unlimited)
+    minted: uint64
+    is_mutable: bool
+    royalty_percentage: uint32 (0..100)
+    royalty_recipient_public_key?: Bytes33
+}
+
+NftRecordKey = (collection_id, token_id)
+```
+
+##### Pseudocode
+```
+func validateCollectionCreate(req):
+    assert !existsCollection(req.creator, req.collection_id)
+    assert req.royalty_percentage <= 100
+    insert CollectionRecord{minted=0,...}
+
+func validateMint(collection, token_id):
+    assert !existsNFT(collection.collection_id, token_id)
+    if collection.max_supply > 0:
+        assert collection.minted + 1 <= collection.max_supply
+    collection.minted += 1
+    insert NftRecordKey(collection.collection_id, token_id)
+
+func validateBatchMint(collection, mint_list):
+    if collection.max_supply > 0:
+        assert collection.minted + len(mint_list) <= collection.max_supply
+    // Pre-check uniqueness
+    for m in mint_list:
+        assert !existsNFT(collection.collection_id, m.token_id)
+    // Apply
+    for m in mint_list:
+        insert NftRecordKey(collection.collection_id, m.token_id)
+    collection.minted += len(mint_list)
+
+func validateTransfer(nft_outputs):
+    // Standard TTXO spend rules already enforce single-spend
+    for o in nft_outputs:
+        assert isNFT(o) && isUnspent(o)
+
+func validateCollectionUpdate(collection, update):
+    assert collection.is_mutable
+    // Only description/external_url allowed; royalty & supply immutable
+```
+
+All modifications must occur within a single atomic state transition guarded by threshold signing; partial application is invalid.
 
 #### Lightning Network Integration
 
 NFTs inherit full Lightning compatibility through existing Spark infrastructure:
 
-**Lightning NFT Transfers**:
-1. **Conditional Transfer**: NFT locked pending Lightning payment completion
-2. **Atomic Settlement**: Lightning payment proof triggers NFT ownership change
-3. **Instant Finality**: Sub-second NFT transfers via Lightning channels
-4. **Micropayments**: Enable NFT streaming, fractional royalties, and pay-per-view content
+**Lightning NFT Transfers (Ownership Focus)**:
+1. Ownership outputs (not large metadata blobs) participate in conditional payment workflows.
+2. Metadata resolution remains side-car (Phase 1) — Lightning only needs the output references.
+3. Atomic settlement couples payment proof with statechain ownership update.
+4. Micropayment patterns (streaming, pay-per-view) use rapid re-issuance / conditional transfers.
 
 **Use Cases**:
 - **Streaming Access**: Pay satoshis per minute for premium content NFTs
 - **Gaming Assets**: Instant in-game item transfers with Lightning payments
 - **Royalty Distribution**: Automatic creator payments on Lightning-enabled marketplaces
 
-// Collection Metadata
-message NftCollectionMetadata {
-    bytes collection_identifier = 1 [(validate.rules).bytes.len = 32];
-    bytes creator_public_key = 2 [(validate.rules).bytes.len = 33];
-    string collection_name = 3;
-    string collection_symbol = 4;
-    string description = 5;
-    optional string external_url = 6;
-    optional uint32 royalty_percentage = 7;
-    optional uint64 max_supply = 8;
-    uint64 current_supply = 9;
-    bool is_mutable = 10;
-    google.protobuf.Timestamp created_at = 11;
-}
-
-// Individual NFT Metadata
-message NftMetadata {
-    bytes collection_identifier = 1 [(validate.rules).bytes.len = 32];
-    string token_id = 2;
-    string name = 3;
-    optional string description = 4;
-    optional string image_url = 5;
-    repeated NftAttribute attributes = 6;
-    bytes current_owner = 7 [(validate.rules).bytes.len = 33];
-    google.protobuf.Timestamp created_at = 8;
-    google.protobuf.Timestamp last_transferred_at = 9;
-}
+// (Removed alternative embedding proto example to avoid confusion in Phase 1.
+// Future embedding will introduce an optional nft_metadata field on TokenOutput
+// and MAY adopt hashed 32-byte collection identifiers. This section intentionally
+// minimized for clarity.)
 ```
 
 #### Database Schema Extensions
@@ -235,44 +235,38 @@ message NftMetadata {
 For operational efficiency, individual SOs may choose to implement local indexing of NFT data:
 
 ```sql
--- NFT Collections table
+-- Phase 1 Reference (string collection_id)
 CREATE TABLE nft_collections (
-    collection_identifier BYTEA PRIMARY KEY CHECK (length(collection_identifier) = 32),
-    creator_public_key BYTEA NOT NULL CHECK (length(creator_public_key) = 33),
-    collection_name VARCHAR(100) NOT NULL,
-    collection_symbol VARCHAR(10) NOT NULL,
+    creator_public_key BYTEA NOT NULL CHECK (length(creator_public_key)=33),
+    collection_id VARCHAR(50) NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    symbol VARCHAR(10) NOT NULL,
     description VARCHAR(500),
     external_url VARCHAR(200),
-    royalty_percentage INTEGER CHECK (royalty_percentage >= 0 AND royalty_percentage <= 100),
-    max_supply BIGINT CHECK (max_supply >= 0), -- 0 = unlimited supply
-    current_supply BIGINT NOT NULL DEFAULT 0,
+    royalty_percentage INTEGER CHECK (royalty_percentage BETWEEN 0 AND 100),
+    royalty_recipient_public_key BYTEA CHECK (royalty_recipient_public_key IS NULL OR length(royalty_recipient_public_key)=33),
+    max_supply BIGINT CHECK (max_supply >= 0),
+    minted BIGINT NOT NULL DEFAULT 0,
     is_mutable BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    
-    INDEX idx_nft_collections_creator (creator_public_key),
-    INDEX idx_nft_collections_created (created_at),
-    UNIQUE (creator_public_key, collection_name)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (creator_public_key, collection_id)
 );
 
--- NFT Tokens table
 CREATE TABLE nft_tokens (
-    collection_identifier BYTEA NOT NULL CHECK (length(collection_identifier) = 32),
+    creator_public_key BYTEA NOT NULL CHECK (length(creator_public_key)=33),
+    collection_id VARCHAR(50) NOT NULL,
     token_id VARCHAR(20) NOT NULL,
     name VARCHAR(100) NOT NULL,
     description VARCHAR(1000),
     image_url VARCHAR(500),
     attributes JSONB,
-    current_owner BYTEA NOT NULL CHECK (length(current_owner) = 33),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    last_transferred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    
-    PRIMARY KEY (collection_identifier, token_id),
-    FOREIGN KEY (collection_identifier) REFERENCES nft_collections(collection_identifier),
-    INDEX idx_nft_tokens_owner (current_owner),
-    INDEX idx_nft_tokens_collection (collection_identifier),
-    INDEX idx_nft_tokens_created (created_at)
+    owner_public_key BYTEA NOT NULL CHECK (length(owner_public_key)=33),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_transferred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (creator_public_key, collection_id, token_id),
+    FOREIGN KEY (creator_public_key, collection_id) REFERENCES nft_collections(creator_public_key, collection_id)
 );
-
+```
 -- NFT Transactions table
 CREATE TABLE nft_transactions (
     transaction_hash BYTEA PRIMARY KEY CHECK (length(transaction_hash) = 32),
@@ -391,13 +385,9 @@ CREATE TABLE nft_transactions (
 );
 ```
 
-#### Uniqueness Guarantees
+#### Uniqueness Guarantees (Consolidated)
 
-NFT uniqueness is enforced at multiple levels:
-
-1. **Collection Level**: `SHA256(creator_public_key || collection_name || timestamp || nonce)`
-2. **Token Level**: `collection_identifier:token_id` must be globally unique
-3. **SO Consensus Validation**: Distributed SO validation prevents duplicates through protocol consensus
+See "Identifiers & Uniqueness" above for Phase 1 rules. Future hashed identifiers are optional and out-of-scope for initial consensus.
 4. **SO Validation**: Spark Operators validate uniqueness before signing
 
 #### Transfer Mechanism
@@ -569,7 +559,7 @@ BTNFT inherits Spark's proven security model without introducing new attack vect
 ### NFT-Specific Security Analysis
 
 **Collection Security**:
-- **Creator Authority**: Only collection owners can mint NFTs (enforced via signature validation)
+- **Creator Authority**: Only collection owner can mint NFTs (enforced via signature validation)
 - **Supply Enforcement**: SOs validate minting against collection supply limits
 - **Uniqueness Guarantees**: Collection IDs must be unique per creator (SO consensus validation)
 - **Immutability Options**: Collections can be created as immutable to prevent post-creation changes
@@ -647,10 +637,6 @@ BTNFT inherits Spark's proven security model without introducing new attack vect
    - Review key management for collection and NFT operations
    - Validate revocation key generation and management
 
-4. **Economic Security Analysis**:
-   - Game theory analysis of creator incentives
-   - Royalty mechanism security evaluation
-   - Market manipulation resistance assessment
 
 ### Known Security Limitations
 
@@ -665,11 +651,6 @@ BTNFT inherits Spark's proven security model without introducing new attack vect
    - Compromised creator keys could mint unauthorized NFTs
    - **Mitigation**: Multi-sig collection creation and immutable collections
    - **Impact**: Similar to any other digital signature system
-
-3. **Regulatory Uncertainty**:
-   - NFTs may be considered securities in some jurisdictions
-   - **Mitigation**: Protocol-level neutrality, compliance is user responsibility
-   - **Impact**: Requires legal analysis per jurisdiction
 
 **Security vs. Usability Balance**:
 BTNFT prioritizes security through infrastructure reuse while maintaining usability through familiar BTKN transaction patterns. The protocol makes conservative choices that favor security over advanced features where trade-offs are necessary.
@@ -761,7 +742,7 @@ BTNFT represents a natural evolution of the Spark ecosystem, bringing native NFT
 
 ### Batch Mint Limit & DoS Rationale
 
-Parameter: `NftBatchMintInput.mint_requests` maximum = 50.
+Parameter (Phase 1 canonical): `NftBatchMintInput.mint_requests` maximum = 50.
 
 Rationale:
 1. Performance Bound: Caps worst-case per-transaction validation and signature work to keep latency near BTKN baseline (< single signing round SLA impact).
@@ -772,7 +753,7 @@ Rationale:
 6. Supply Race Mitigation: Smaller atomic mint groups reduce contention when multiple minters race near max_supply.
 7. Audit Simplicity: Easier to reason about uniqueness & supply invariants in bounded atomic sets.
 
-Configurability: Operators MAY adopt a lower runtime cap; raising above 50 requires performance profiling + audit sign-off. SIP reserves right to revisit after embedding phase or performance optimizations.
+Configurability: Operators MAY adopt a lower runtime cap; raising above 50 requires performance profiling + audit sign-off. If a future protocol revision proposes >50 it MUST include new latency & memory benchmarks.
 
 BTNFT positions the Spark state-chain beyond simple value transfer while maintaining its core principles of trustlessness and self-custody. The protocol's Lightning integration creates unique capabilities unavailable in other NFT ecosystems, potentially capturing significant market share from existing platforms.
 
