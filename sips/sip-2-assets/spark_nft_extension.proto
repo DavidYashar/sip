@@ -1,82 +1,138 @@
 syntax = "proto3";
 
-package spark_token; // Keep same package so we can reference existing core messages.
+package spark_nft; // Separate package to avoid circular dependencies
 
-import "spark_token.proto"; // Core token protocol (MUST NOT be modified here).
+import "spark_token.proto";
+import "spark.proto"; 
 import "validate/validate.proto";
+import "google/protobuf/empty.proto";
 
-option go_package = "github.com/lightsparkdev/spark/proto/spark_token";
+option go_package = "github.com/lightsparkdev/spark/proto/spark_nft";
 
 // ============================================================================
-// Spark NFT Extension (Sidecar Spec)
+// Spark NFT Extension - Bitcoin-Native NFT Protocol
 // ---------------------------------------------------------------------------
-// This file DEFINES ONLY NEW / AUXILIARY MESSAGES for NFT functionality.
-// It deliberately DOES NOT re‑define or alter core messages like TokenOutput
-// or TokenTransaction to avoid hash / wire incompatibilities with Spark Core.
-// Integration of NFTs into hashed TokenTransaction structures requires a
-// coordinated core proto change; until then, these messages serve as a
-// side-channel / proposal layer.
+// This extension enables NFT functionality on Spark by building on the proven
+// BTKN foundation. Rather than creating separate systems that fragment the
+// ecosystem, we're extending what already works reliably. Phase 1 uses
+// side-car metadata storage to deliver NFT functionality without modifying
+// existing systems. Future phases can embed metadata directly after thorough
+// testing, but this approach provides both functionality and stability.
 // ============================================================================
 
-// Wrapper used in query responses to pair a base TokenOutput with NFT metadata
-// when metadata is tracked off-ledger or via an adjunct index.
+// Core NFT service that integrates with Spark's existing infrastructure.
+// Provides NFT operations including transfers, Lightning payments, self-custody,
+// and fee-free transactions using proven Spark architecture.
+service SparkNftService {
+    // NFT transaction flow 
+    rpc start_nft_transaction(StartNftTransactionRequest) returns (StartNftTransactionResponse) {}
+    rpc commit_nft_transaction(CommitNftTransactionRequest) returns (CommitNftTransactionResponse) {}
+    
+    // Discovery and marketplace queries 
+    rpc query_nft_collections(QueryNftCollectionsRequest) returns (QueryNftCollectionsResponse) {}
+    rpc query_nft_tokens(QueryNftTokensRequest) returns (QueryNftTokensResponse) {}
+    rpc query_nft_outputs(QueryNftOutputsRequest) returns (QueryNftOutputsResponse) {}
+    rpc query_nft_metadata(QueryNftMetadataRequest) returns (QueryNftMetadataResponse) {}
+}
+
+// NFT operation categories covering the complete lifecycle from collection
+// creation to individual minting and ownership transfers
+enum NftTransactionType {
+    NFT_TRANSACTION_TYPE_UNSPECIFIED = 0;
+    NFT_TRANSACTION_TYPE_COLLECTION_CREATE = 1;  // Create new collections
+    NFT_TRANSACTION_TYPE_MINT = 2;               // Mint individual NFTs
+    NFT_TRANSACTION_TYPE_TRANSFER = 3;           // Transfer ownership
+    NFT_TRANSACTION_TYPE_BATCH_MINT = 4;         // Batch minting operations
+    NFT_TRANSACTION_TYPE_COLLECTION_UPDATE = 5;  // Update mutable collections
+}
+
+// The core wrapper that connects NFT functionality with Bitcoin's proven security model.
+// This structure bridges creative digital assets with Spark's battle-tested statechain
+// infrastructure - each NFT operation is anchored by a corresponding BTKN transaction
+// that provides the underlying ownership guarantees.
+message NftTransaction {
+    uint32 version = 1;
+    oneof nft_inputs {
+        NftCollectionInput collection_input = 2;           // Create a new collection
+        NftMintInput mint_input = 3;                       // Mint individual NFTs
+        NftTransferInput transfer_input = 4;               // Transfer ownership instantly
+        NftBatchMintInput batch_mint_input = 5;            // Mint up to 50 NFTs atomically
+        NftCollectionUpdateInput collection_update_input = 6; // Update mutable collections
+    }
+    // Each NFT operation references a corresponding BTKN transaction for ownership
+    bytes base_token_transaction_hash = 7 [(validate.rules).bytes.len = 32];
+    NftTransactionType transaction_type = 8;  // The type of operation being performed
+}
+
+// Side Car structure
+// Combined structure that provides both secure ownership through BTKN
+// infrastructure and rich NFT metadata. Links Bitcoin-secured ownership
+// with comprehensive token information and attributes.
 message NftOutputRecord {
-    spark_token.TokenOutput base_output = 1; // Existing fungible TTXO
-    NftMetadata metadata = 2;                // Associated NFT metadata
+    spark_token.TokenOutput base_output = 1; // Bitcoin-secured ownership foundation
+    NftMetadata metadata = 2;                // NFT-specific information and attributes
+    bytes nft_transaction_hash = 3 [(validate.rules).bytes.len = 32]; // Transaction reference
 }
 
-// NFT metadata embedded within TTXO
+// Complete NFT metadata structure containing all information that makes
+// each token unique. Includes collection identity, individual traits, and
+// display information while maintaining performance through field constraints.
 message NftMetadata {
-    string collection_id = 1 [(validate.rules).string = {min_len: 1, max_len: 50}];
-    string token_id = 2 [(validate.rules).string = {min_len: 1, max_len: 20}];
-    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    optional string description = 4 [(validate.rules).string.max_len = 1000];
-    optional string image_url = 5 [(validate.rules).string.max_len = 500];
-    // Cap attribute array size to bound serialized message size
-    repeated NftAttribute attributes = 6 [(validate.rules).repeated = {max_items: 50}];
-    bool is_collection_root = 7; // true if designating the collection root output
-    optional uint64 max_supply = 8; // collection supply limit (0=unbounded)
-    optional uint32 royalty_percentage = 9 [(validate.rules).uint32.lte = 100];
-    // Explicit royalty recipient (absent => collection creator implied)
-    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33];
+    string collection_id = 1 [(validate.rules).string = {min_len: 1, max_len: 50}];  // Collection identifier
+    string token_id = 2 [(validate.rules).string = {min_len: 1, max_len: 20}];       // Unique token identifier
+    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];          // Token display name
+    optional string description = 4 [(validate.rules).string.max_len = 1000];        // Token description
+    optional string image_url = 5 [(validate.rules).string.max_len = 500];           // Visual content reference
+    repeated NftAttribute attributes = 6 [(validate.rules).repeated = {max_items: 50}]; // Token attributes and traits
+    bool is_collection_root = 7;         // Indicates collection authority NFT
+    optional uint64 max_supply = 8;      // Collection supply limit (0 = unlimited)
+    optional uint32 royalty_percentage = 9 [(validate.rules).uint32.lte = 100];      // Creator royalty percentage
+    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33]; // Royalty payment recipient
 }
 
-// NFT attribute/trait definition
+// Individual NFT attributes that define token characteristics and rarity.
+// These key-value pairs enable filtering, searching, and marketplace features
+// by providing structured metadata for each token's unique properties.
 message NftAttribute {
-    string trait_type = 1 [(validate.rules).string = {min_len: 1, max_len: 50}];
-    string value = 2 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    optional string display_type = 3 [(validate.rules).string.max_len = 30];
+    string trait_type = 1 [(validate.rules).string = {min_len: 1, max_len: 50}];  // Attribute category
+    string value = 2 [(validate.rules).string = {min_len: 1, max_len: 100}];      // Attribute value
+    optional string display_type = 3 [(validate.rules).string.max_len = 30];      // Display formatting hint
 }
 
-// NFT Collection Creation Input
+// Collection creation input that enables creators to establish new NFT collections
+// with full control over supply limits, royalty configuration, and mutability
+// settings. Provides the foundation for organized NFT ecosystems.
 message NftCollectionInput {
-    bytes creator_public_key = 1 [(validate.rules).bytes.len = 33];
-    string collection_id = 2 [(validate.rules).string = {min_len: 1, max_len: 50}];
-    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    string symbol = 4 [(validate.rules).string = {min_len: 1, max_len: 10}];
-    optional string description = 5 [(validate.rules).string.max_len = 500];
-    optional string external_url = 6 [(validate.rules).string.max_len = 200];
-    optional uint64 max_supply = 7; // 0 = unlimited
-    optional uint32 royalty_percentage = 8 [(validate.rules).uint32.lte = 100];
-    bool is_mutable = 9; // If true, limited fields may be updated
-    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33];
+    bytes creator_public_key = 1 [(validate.rules).bytes.len = 33];               // Collection creator identity
+    string collection_id = 2 [(validate.rules).string = {min_len: 1, max_len: 50}]; // Unique collection identifier
+    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];       // Collection display name
+    string symbol = 4 [(validate.rules).string = {min_len: 1, max_len: 10}];      // Collection symbol
+    optional string description = 5 [(validate.rules).string.max_len = 500];      // Collection description
+    optional string external_url = 6 [(validate.rules).string.max_len = 200];     // External resource link
+    optional uint64 max_supply = 7;   // Maximum tokens in collection (0 = unlimited)
+    optional uint32 royalty_percentage = 8 [(validate.rules).uint32.lte = 100];   // Royalty percentage
+    bool is_mutable = 9;              // Whether collection metadata can be updated
+    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33]; // Royalty recipient
 }
 
-// Individual NFT Minting Input
+// Individual NFT minting within established collections. Each mint operation
+// creates a unique token with specific metadata, attributes, and ownership
+// assignment while respecting collection constraints and authority requirements.
 message NftMintInput {
-    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33]; // Must reference a valid collection root output
-    bytes minter_public_key = 2 [(validate.rules).bytes.len = 33];
-    string token_id = 3 [(validate.rules).string = {min_len: 1, max_len: 20}];
-    string name = 4 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    optional string description = 5 [(validate.rules).string.max_len = 1000];
-    optional string image_url = 6 [(validate.rules).string.max_len = 500];
-    repeated NftAttribute attributes = 7 [(validate.rules).repeated = {max_items: 50}];
-    bytes recipient_public_key = 8 [(validate.rules).bytes.len = 33];
+    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33];      // Collection authority key
+    bytes minter_public_key = 2 [(validate.rules).bytes.len = 33];                // Authorized minter identity
+    string token_id = 3 [(validate.rules).string = {min_len: 1, max_len: 20}];    // Unique token identifier
+    string name = 4 [(validate.rules).string = {min_len: 1, max_len: 100}];       // Token name
+    optional string description = 5 [(validate.rules).string.max_len = 1000];     // Token description
+    optional string image_url = 6 [(validate.rules).string.max_len = 500];        // Visual content reference
+    repeated NftAttribute attributes = 7 [(validate.rules).repeated = {max_items: 50}]; // Token attributes
+    bytes recipient_public_key = 8 [(validate.rules).bytes.len = 33];             // Initial token owner
 }
 
-// NFT Transfer Input (uses existing transfer mechanism)
+// NFT ownership transfer operations using Spark's proven statechain technology.
+// Enables rapid ownership changes by referencing specific token outputs to
+// transfer without traditional blockchain confirmation delays.
 message NftTransferInput {
-    // References NFT-bearing TTXOs (each should resolve to a unique NFT)
     repeated TokenOutputToSpend outputs_to_spend = 1 [(validate.rules).repeated = {max_items: 50}];
 }
 
@@ -84,41 +140,155 @@ message NftTransferInput {
 // NOTE: TokenOutputToSpend is already defined in core spark_token.proto.
 // DO NOT re-declare it here.
 
-// For marketplace/wallet functionality
-message QueryNftRequest {
-    optional bytes owner_public_key = 1; // Filter by current owner
-    optional string collection_id = 2;   // Filter by collection id
-    optional bytes collection_creator = 3; // Filter by collection creator pubkey
-    optional string token_id = 4;        // Filter specific token id within collection
+// Collection discovery queries supporting marketplace and wallet functionality.
+// Enables searching collections by creator, identifier, or network with
+// pagination support for efficient data retrieval.
+message QueryNftCollectionsRequest {
+    repeated bytes creator_public_keys = 1 [(validate.rules).repeated.items.bytes.len = 33];
+    repeated string collection_ids = 2 [(validate.rules).repeated.items.string = {min_len: 1, max_len: 50}];
+    spark.Network network = 3;  // mainnet, testnet, or regtest
+    int64 limit = 4;            // How many results to return
+    int64 offset = 5;           // Where to start (for pagination)
 }
 
-message QueryNftResponse {
-    repeated NftOutputRecord nft_outputs = 1; // Combined base outputs + metadata
+message QueryNftCollectionsResponse {
+    repeated NftCollectionRecord collections = 1;
+    int64 total_count = 2;
+    int64 offset = 3;
 }
 
+// Individual NFT token queries supporting portfolio management and marketplace
+// browsing. Search by owner, collection, creator, or specific token identifiers
+// to locate and retrieve comprehensive token information.
+message QueryNftTokensRequest {
+    repeated bytes owner_public_keys = 1 [(validate.rules).repeated.items.bytes.len = 33];
+    repeated string collection_ids = 2 [(validate.rules).repeated.items.string = {min_len: 1, max_len: 50}];
+    repeated bytes creator_public_keys = 3 [(validate.rules).repeated.items.bytes.len = 33];
+    repeated string token_ids = 4 [(validate.rules).repeated.items.string = {min_len: 1, max_len: 20}];
+    spark.Network network = 5;  // Which Bitcoin network
+    int64 limit = 6;            // Results per page
+    int64 offset = 7;           // Pagination offset
+}
+
+message QueryNftTokensResponse {
+    repeated NftOutputRecord nft_tokens = 1;
+    int64 total_count = 2;
+    int64 offset = 3;
+}
+
+// Token output queries for accessing the underlying Bitcoin-secured ownership
+// layer. Essential for wallets and services that need to track and manage
+// the actual TokenOutputs representing NFT ownership rights.
+message QueryNftOutputsRequest {
+    repeated bytes owner_public_keys = 1 [(validate.rules).repeated.items.bytes.len = 33];
+    repeated string output_ids = 2 [(validate.rules).repeated.items.string.uuid = true];
+    repeated string collection_ids = 3 [(validate.rules).repeated.items.string = {min_len: 1, max_len: 50}];
+    spark.Network network = 4;  // Which network to search
+    int64 limit = 5;            // How many to return
+    int64 offset = 6;           // Starting position
+}
+
+message QueryNftOutputsResponse {
+    repeated NftOutputRecord nft_outputs = 1;
+    int64 total_count = 2;
+    int64 offset = 3;
+}
+
+// Metadata-focused queries that return token information without ownership
+// complexity. Optimized for displaying NFT information in galleries and
+// marketplaces where only content and attributes are needed.
+message QueryNftMetadataRequest {
+    repeated string collection_ids = 1 [(validate.rules).repeated.items.string = {min_len: 1, max_len: 50}];
+    repeated string token_ids = 2 [(validate.rules).repeated.items.string = {min_len: 1, max_len: 20}];
+    repeated bytes creator_public_keys = 3 [(validate.rules).repeated.items.bytes.len = 33];
+}
+
+message QueryNftMetadataResponse {
+    repeated NftMetadata metadata_records = 1;
+}
+
+// Collection metadata updates for mutable collections. Allows authorized
+// creators to modify descriptions and external URLs while preserving
+// immutable elements like supply limits and royalty settings.
 message NftCollectionUpdateInput {
-    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33];
-    bytes updater_public_key = 2 [(validate.rules).bytes.len = 33];
-    optional string description = 3 [(validate.rules).string.max_len = 500];
-    optional string external_url = 4 [(validate.rules).string.max_len = 200];
-    // Valid only if original collection set is_mutable = true. Enforcement is application/consensus layer responsibility.
+    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33];  // Collection authority
+    bytes updater_public_key = 2 [(validate.rules).bytes.len = 33];           // Must be authorized
+    optional string description = 3 [(validate.rules).string.max_len = 500];  // New description
+    optional string external_url = 4 [(validate.rules).string.max_len = 200]; // New website
 }
 
-message NftBatchMintInput {
-    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33];
-    repeated NftMintInput mint_requests = 2 [(validate.rules).repeated = {max_items: 50}]; // Bounded batch size
+// Comprehensive collection information record containing all metadata and
+// operational details. Includes basic information, supply tracking, authority
+// management, and creation history for complete collection representation.
+message NftCollectionRecord {
+    string collection_id = 1;                                                     // Unique identifier
+    bytes creator_public_key = 2 [(validate.rules).bytes.len = 33];              // Original creator
+    string name = 3;                                                              // Display name
+    string symbol = 4;                                                            // Short identifier
+    optional string description = 5;                                              // Collection story
+    optional string external_url = 6;                                             // Creator's website
+    optional uint64 max_supply = 7;                                               // Maximum pieces
+    uint64 current_supply = 8;                                                    // How many exist now
+    optional uint32 royalty_percentage = 9;                                       // Creator rewards
+    optional bytes royalty_recipient_public_key = 10 [(validate.rules).bytes.len = 33]; // Payment destination
+    bool is_mutable = 11;                                                         // Can be updated
+    bytes collection_token_public_key = 12 [(validate.rules).bytes.len = 33];    // Authority key
+    bytes collection_transaction_hash = 13 [(validate.rules).bytes.len = 32];    // Creation transaction
 }
+
+// NFT transaction initiation request following the proven BTKN transaction
+// pattern. Submit NFT operation details and authorization for Spark Operators
+// to validate, coordinate, and prepare for the signing process.
+message StartNftTransactionRequest {
+    bytes identity_public_key = 1 [(validate.rules).bytes.len = 33];              // Who you are
+    NftTransaction partial_nft_transaction = 2;                                    // What you want to do
+    repeated spark_token.SignatureWithIndex nft_authorization_signatures = 3;     // Your authorization
+    uint64 validity_duration_seconds = 4 [(validate.rules).uint64 = { gte: 1, lte: 300 }]; // How long it's valid
+}
+
+// Successful transaction preparation response containing all information
+// needed to complete the NFT operation. Includes finalized transaction details,
+// Spark Operator coordination info, and the underlying BTKN transaction.
+message StartNftTransactionResponse {
+    NftTransaction final_nft_transaction = 1;              // The complete transaction
+    spark.SigningKeyshare keyshare_info = 2;               // Spark Operator details
+    spark_token.TokenTransaction base_token_transaction = 3; // The Bitcoin foundation
+}
+
+// Transaction commitment request to finalize NFT operations. Spark Operators
+// provide threshold signatures to complete the transaction and integrate
+// the NFT operation into the Bitcoin-secured state.
+message CommitNftTransactionRequest {
+    NftTransaction final_nft_transaction = 1;              // The transaction to commit
+    bytes final_nft_transaction_hash = 2 [(validate.rules).bytes.len = 32];   // Transaction fingerprint
+    repeated NftTransactionSignature nft_signatures_per_operator = 3;         // SO approvals
+    bytes owner_identity_public_key = 4 [(validate.rules).bytes.len = 33];    // Your identity
+}
+
+message CommitNftTransactionResponse {
+    spark_token.CommitStatus commit_status = 1;
+    spark_token.CommitProgress commit_progress = 2;
+}
+
+// Batch minting operations for efficient large-scale NFT creation. Enables
+// atomic minting of up to 50 NFTs in a single operation, ensuring all tokens
+// are created successfully or the entire batch fails together.
+message NftBatchMintInput {
+    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33];   // Collection authority
+    repeated NftMintInput mint_requests = 2 [(validate.rules).repeated = {max_items: 50}]; // The NFTs to create
+}
+
 // END OF NFT EXTENSION SIDE-CAR
 
-// Future integration notes:
-// 1. To embed NFT data on-chain (hashed) a future core change could add
-//    `optional NftMetadata nft_metadata = <new_field_number>;` to TokenOutput.
-// 2. Until then, wallets/services map base outputs to NFT metadata via an
-//    index keyed by (collection_id, token_id) and/or output id.
-// 3. Consensus layer MUST enforce uniqueness of (collection_id, token_id) and
-//    adherence to max_supply when processing mint/batch mint requests.
-// Reference to existing Spark structures (these already exist in spark_token.proto)
-// TokenMintInput - already defined in Spark
-// TokenTransferInput - already defined in Spark  
-// TokenCreateInput - already defined in Spark
+// Future integration notes for the next evolution:
+// 1. When we're ready to embed NFT metadata directly into TokenOutput 
+//    (after extensive testing), we can add `optional NftMetadata nft_metadata`
+//    to the core TokenOutput structure.
+// 2. Until then, this side-car approach gives us all the NFT functionality
+//    we need while keeping the proven BTKN foundation rock-solid.
+// 3. The consensus layer will enforce uniqueness of (collection_id, token_id)
+//    pairs and make sure nobody exceeds max_supply limits.
+// 
+// This design lets us have Bitcoin NFTs TODAY while keeping the door open
+// for even deeper integration tomorrow. It's innovation with wisdom.
 

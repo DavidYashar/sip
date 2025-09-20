@@ -9,756 +9,161 @@ Discussions-to: TBD
 
 ## Summary
 
-This SIP proposes BTNFT (Bitcoin Token Non-Fungible), an extension to the existing BTKN protocol that enables native NFT functionality on the Spark Bitcoin Layer 2 network. BTNFT extends the proven TTXO (Token Transaction Output) model and existing BTKN infrastructure to support NFT collections, individual token minting, and instant transfers while maintaining full compatibility with Spark's statechain and FROST signing mechanisms.
+BTNFT (Bitcoin Token Non-Fungible) brings native NFT functionality to the Spark Bitcoin Layer 2 network by extending the proven BTKN protocol. Rather than building a separate system, BTNFT seamlessly integrates with Spark's existing TTXO (Token Transaction Output) infrastructure, enabling NFT collections, individual token minting, and instant transfers while maintaining complete compatibility with Spark's statechain technology and FROST signing mechanisms.
 
 ## Motivation
 
-The NFT market represents a significant opportunity for Bitcoin Layer 2 adoption, with over $7.9 billion market cap and approximately $2.4 billion in trading volume across all blockchains. 
-
-
-Spark's unique architecture provides an ideal foundation for Bitcoin-native NFTs:
-- **Instant Transfers**: Sub-second NFT transfers via proven statechain technology
-- **Near-Zero Costs**: Eliminate gas fees while maintaining Bitcoin security
-- **Self-Custody**: Users maintain full control through proven statechain technology
-- **Lightning Compatible**: Native support for NFT micropayments and streaming
-- **Battle-Tested Infrastructure**: Builds on proven BTKN/LRC-20 foundation
-
-BTNFT would position Spark as the premier platform for Bitcoin NFTs while demonstrating Bitcoin's evolutionized structure.
-
-## Specification
-
-### Protocol Architecture
-
-BTNFT extends the proven BTKN (Bitcoin Token) protocol by adding NFT-specific transaction types to the existing TokenTransaction model. Rather than creating a separate protocol, BTNFT integrates seamlessly with Spark's TTXO infrastructure, ensuring compatibility with existing wallets, services, and Lightning integration.
-
-#### Core Design Principles
-
-1. **BTKN Extension**: NFTs are a specialized type of BTKN token with unique metadata
-2. **TTXO Compatibility**: NFT data embedded within existing Token Transaction Output structure  
-3. **Unified Processing**: Same Start/Sign/Finalize transaction flow as regular BTKN tokens
-4. **Lightning Native**: NFTs flow through Lightning channels using existing infrastructure
-5. **Self-Custody**: Users maintain full control through proven cryptographic mechanisms
-
-#### NFT Metadata Association (Phase 1 Side-Car)
-
-Phase 1 purposely does **not** alter the canonical hashing of `TokenTransaction` or `TokenOutput`. Descriptive NFT metadata is maintained in a side-car index keyed by `(collection_id, token_id)` and/or the owning output id. Ownership remains purely the base TTXO. A future phase MAY embed an optional `nft_metadata` field directly (reserved concept only) after a hashing determinism + audit review.
-
-Canonical excerpt (current side‑car spec from `spark_nft_extension.proto` – truncated for brevity):
-```protobuf
-message NftMetadata {
-    string collection_id = 1;            // 1..50 chars
-    string token_id = 2;                 // 1..20 chars
-    string name = 3;                     // 1..100 chars
-    optional string description = 4;     // ≤1000 chars
-    optional string image_url = 5;       // ≤500 chars
-    repeated NftAttribute attributes = 6; // ≤50 entries
-    bool is_collection_root = 7;
-    optional uint64 max_supply = 8;      // 0 = unlimited
-    optional uint32 royalty_percentage = 9; // 0..100 (immutable)
-    optional bytes royalty_recipient_public_key = 10; // 33B if present
-}
-```
-
-All limits enforced via protoc-gen-validate annotations; they bound worst-case parsing & validation complexity and underpin DoS rationale.
-
-#### Transaction Inputs (Phase 1 Adaptation)
-
-In Phase 1 the *core* `TokenTransaction` proto (hash surface) is **unchanged**. NFT intent messages (`NftCollectionInput`, `NftMintInput`, `NftBatchMintInput`, `NftTransferInput`, `NftCollectionUpdateInput`) exist only in the side-car extension file. An adapter layer interprets them and produces a standard base `TokenTransaction` for signing. Any snippet showing embedded NFT oneof arms in `TokenTransaction` refers to a **future embedding phase** and is intentionally removed here to avoid ambiguity.
-// NFT Collection Creation Input
-message NftCollectionInput {
-    bytes creator_public_key = 1 [(validate.rules).bytes.len = 33];
-    string collection_id = 2 [(validate.rules).string = {min_len: 1, max_len: 50}];
-    string name = 3 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    string symbol = 4 [(validate.rules).string = {min_len: 1, max_len: 10}];
-    optional string description = 5 [(validate.rules).string.max_len = 500];
-    optional string external_url = 6 [(validate.rules).string.max_len = 200];
-    optional uint64 max_supply = 7; // 0 = unlimited supply
-    optional uint32 royalty_percentage = 8 [(validate.rules).uint32.lte = 100];
-    bool is_mutable = 9; // Can collection metadata be updated post-creation
-}
-
-// Individual NFT Minting Input
-message NftMintInput {
-    bytes collection_token_public_key = 1 [(validate.rules).bytes.len = 33]; // References collection TTXO
-    bytes minter_public_key = 2 [(validate.rules).bytes.len = 33]; // Must be collection owner or authorized
-    string token_id = 3 [(validate.rules).string = {min_len: 1, max_len: 20}];
-    string name = 4 [(validate.rules).string = {min_len: 1, max_len: 100}];
-    optional string description = 5 [(validate.rules).string.max_len = 1000];
-    optional string image_url = 6 [(validate.rules).string.max_len = 500];
-    repeated NftAttribute attributes = 7;
-    bytes recipient_public_key = 8 [(validate.rules).bytes.len = 33]; // Who receives the NFT
-}
-
-// NFT Transfer Input (uses existing transfer mechanism)
-message NftTransferInput {
-    repeated TokenOutputToSpend outputs_to_spend = 1; // References NFT TTXOs to transfer
-}
-```
-
-#### NFT Transaction Types and Flows
-
-**1. Collection Creation**
-- **Input**: `NftCollectionInput` with collection metadata
-- **Output**: Base TokenOutput (may use nominal amount) plus side-car record flagged `is_collection_root = true`
-- **Validation**: SOs ensure collection ID uniqueness per creator
-- **Result**: Collection TTXO that serves as authority for minting
-
-**2. NFT Minting**
-- **Input**: `NftMintInput` referencing collection + individual NFT metadata
-- **Validation**: SOs verify collection ownership and supply limits
-- **Output**: Base TokenOutput (ownership) plus side-car metadata record
-- **Authority**: Only collection owner (or authorized minter) can mint
-
-**3. NFT Transfer**
-- **Input**: `NftTransferInput` spending existing NFT TTXOs
-- **Process**: Identical to BTKN token transfers via statechain key rotation
-- **Output**: New TokenOutput (ownership) with side-car metadata unchanged
-- **Atomicity**: Multiple NFTs can be transferred in single transaction
-
-**4. Batch Mint (Optional Efficiency)**
-- **Input**: `NftBatchMintInput` with up to 50 `NftMintInput` entries
-- **Validation**: All uniqueness & supply checks applied per element; failure of any aborts entire batch
-- **Result**: Atomic creation of multiple NFT outputs (side-car metadata entries)
-
-#### Service Integration with Existing BTKN Infrastructure
-
-BTNFT reuses the existing BTKN service endpoints with enhanced logic:
-
-```go
-// Extended StartTokenTransaction to handle NFT operations
-func (s *SparkService) StartTokenTransaction(req *StartTokenTransactionRequest) (*StartTokenTransactionResponse, error) {
-    switch req.PartialTokenTransaction.TokenInputs.(type) {
-    case *TokenTransaction_NftCollectionInput:
-        return s.handleNftCollectionCreation(req)
-    case *TokenTransaction_NftMintInput:
-        return s.handleNftMinting(req)
-    case *TokenTransaction_NftTransferInput:
-        return s.handleNftTransfer(req)
-    case *TokenTransaction_MintInput:
-        return s.handleBTKNMinting(req) // Existing BTKN logic
-    case *TokenTransaction_TransferInput:
-        return s.handleBTKNTransfer(req) // Existing BTKN logic
-    }
-}
-```
-
-**Transaction Flow** (identical to BTKN):
-1. **StartTokenTransaction()**: Client provides partial transaction with NFT inputs
-2. **SignTokenTransaction()**: SOs validate and provide threshold signatures  
-3. **FinalizeTokenTransaction()**: Client provides revocation keys, transaction confirmed
-
-#### Identifiers & Uniqueness (Phase 1)
-
-Phase 1 identifier of a collection = `(creator_public_key, collection_id:string)` with `collection_id` length ≤50. A future optimization MAY introduce a 32‑byte `collection_identifier = SHA256(creator_pubkey || collection_id || nonce)`; until adopted it remains non-normative.
-
-Uniqueness rules:
-1. Collection: No duplicate `(creator_public_key, collection_id)`.
-2. NFT: Pair `(collection_id, token_id)` must not exist prior to mint/batch mint.
-3. Supply: If `max_supply > 0`, `current_minted + requested_mints <= max_supply`.
-4. Royalty: `royalty_percentage (0..100)` & optional `royalty_recipient_public_key` immutable post-creation.
-
-##### State Structures (Conceptual)
-```
-CollectionRecord {
-    creator_pubkey: Bytes33
-    collection_id: String<=50
-    max_supply: uint64 (0 = unlimited)
-    minted: uint64
-    is_mutable: bool
-    royalty_percentage: uint32 (0..100)
-    royalty_recipient_public_key?: Bytes33
-}
-
-NftRecordKey = (collection_id, token_id)
-```
-
-##### Pseudocode
-```
-func validateCollectionCreate(req):
-    assert !existsCollection(req.creator, req.collection_id)
-    assert req.royalty_percentage <= 100
-    insert CollectionRecord{minted=0,...}
-
-func validateMint(collection, token_id):
-    assert !existsNFT(collection.collection_id, token_id)
-    if collection.max_supply > 0:
-        assert collection.minted + 1 <= collection.max_supply
-    collection.minted += 1
-    insert NftRecordKey(collection.collection_id, token_id)
-
-func validateBatchMint(collection, mint_list):
-    if collection.max_supply > 0:
-        assert collection.minted + len(mint_list) <= collection.max_supply
-    // Pre-check uniqueness
-    for m in mint_list:
-        assert !existsNFT(collection.collection_id, m.token_id)
-    // Apply
-    for m in mint_list:
-        insert NftRecordKey(collection.collection_id, m.token_id)
-    collection.minted += len(mint_list)
-
-func validateTransfer(nft_outputs):
-    // Standard TTXO spend rules already enforce single-spend
-    for o in nft_outputs:
-        assert isNFT(o) && isUnspent(o)
-
-func validateCollectionUpdate(collection, update):
-    assert collection.is_mutable
-    // Only description/external_url allowed; royalty & supply immutable
-```
-
-All modifications must occur within a single atomic state transition guarded by threshold signing; partial application is invalid.
-
-#### Lightning Network Integration
-
-NFTs inherit full Lightning compatibility through existing Spark infrastructure:
-
-**Lightning NFT Transfers (Ownership Focus)**:
-1. Ownership outputs (not large metadata blobs) participate in conditional payment workflows.
-2. Metadata resolution remains side-car (Phase 1) — Lightning only needs the output references.
-3. Atomic settlement couples payment proof with statechain ownership update.
-4. Micropayment patterns (streaming, pay-per-view) use rapid re-issuance / conditional transfers.
-
-**Use Cases**:
-- **Streaming Access**: Pay satoshis per minute for premium content NFTs
-- **Gaming Assets**: Instant in-game item transfers with Lightning payments
-- **Royalty Distribution**: Automatic creator payments on Lightning-enabled marketplaces
-
-// (Removed alternative embedding proto example to avoid confusion in Phase 1.
-// Future embedding will introduce an optional nft_metadata field on TokenOutput
-// and MAY adopt hashed 32-byte collection identifiers. This section intentionally
-// minimized for clarity.)
-```
-
-#### Database Schema Extensions
-
-For operational efficiency, individual SOs may choose to implement local indexing of NFT data:
-
-```sql
--- Phase 1 Reference (string collection_id)
-CREATE TABLE nft_collections (
-    creator_public_key BYTEA NOT NULL CHECK (length(creator_public_key)=33),
-    collection_id VARCHAR(50) NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    symbol VARCHAR(10) NOT NULL,
-    description VARCHAR(500),
-    external_url VARCHAR(200),
-    royalty_percentage INTEGER CHECK (royalty_percentage BETWEEN 0 AND 100),
-    royalty_recipient_public_key BYTEA CHECK (royalty_recipient_public_key IS NULL OR length(royalty_recipient_public_key)=33),
-    max_supply BIGINT CHECK (max_supply >= 0),
-    minted BIGINT NOT NULL DEFAULT 0,
-    is_mutable BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (creator_public_key, collection_id)
-);
-
-CREATE TABLE nft_tokens (
-    creator_public_key BYTEA NOT NULL CHECK (length(creator_public_key)=33),
-    collection_id VARCHAR(50) NOT NULL,
-    token_id VARCHAR(20) NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    description VARCHAR(1000),
-    image_url VARCHAR(500),
-    attributes JSONB,
-    owner_public_key BYTEA NOT NULL CHECK (length(owner_public_key)=33),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_transferred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (creator_public_key, collection_id, token_id),
-    FOREIGN KEY (creator_public_key, collection_id) REFERENCES nft_collections(creator_public_key, collection_id)
-);
-```
--- NFT Transactions table
-CREATE TABLE nft_transactions (
-    transaction_hash BYTEA PRIMARY KEY CHECK (length(transaction_hash) = 32),
-    nft_transaction BYTEA NOT NULL, -- Serialized NftTransaction protobuf
-    transaction_type VARCHAR(20) NOT NULL CHECK (transaction_type IN ('CREATE_COLLECTION', 'MINT', 'TRANSFER')),
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    confirmed_at TIMESTAMP WITH TIME ZONE,
-    
-    INDEX idx_nft_transactions_type (transaction_type),
-    INDEX idx_nft_transactions_status (status),
-    INDEX idx_nft_transactions_created (created_at)
-);
-```
-
-## Reference Implementation
-
-### Implementation Approach
-
-BTNFT implementation extends existing Spark infrastructure rather than building separate systems:
-
-**Phase 1: Protocol Extension (1 week)**
-- Extend TokenTransaction protobuf with NFT message types
-- Add NFT validation logic to existing BTKN service endpoints
-- Implement NFT-specific SO validation (collection uniqueness, supply limits)
-- Update LRC-20 nodes to handle NFT metadata in gossip network
-
-**Phase 2: Wallet & SDK Integration (1 week)**
-- Extend existing TypeScript SDK with NFT transaction support
-- Update Spark wallets to display and manage NFT TTXOs
-- Add NFT marketplace APIs and GraphQL schema extensions
-- Comprehensive testing with existing BTKN functionality
-
-**Phase 3: Lightning Integration (2 weeks)**
-- Test NFT transfers via existing Lightning infrastructure
-- Implement conditional NFT transfers for Lightning payments
-- Add NFT support to existing Lightning service providers
-- Performance testing and optimization
-
-### Development Resources
-
-**Self-Contained Implementation**:
-All development will be handled internally by the proposal author, ensuring:
-
-- **Protocol Extension**: Direct integration with existing BTKN codebase and validation logic
-- **SDK Development**: TypeScript/JavaScript SDK extensions with comprehensive NFT support
-- **Infrastructure Integration**: LRC-20 node updates for NFT metadata gossiping
-- **Wallet Compatibility**: User interface updates and GraphQL API extensions
-- **Quality Assurance**: Complete test suite coverage for all NFT operations
-- **Performance Optimization**: Benchmarking and optimization for high-volume usage
-
-
-### Code Architecture
-
-```
-spark/
-├── proto/
-│   └── spark.proto              # Extended with NFT message types
-├── server/
-│   ├── token/                   # Extended BTKN service with NFT logic
-│   └── validation/              # NFT validation rules
-├── lrc20/
-│   └── gossip/                  # Extended for NFT metadata
-├── sdks/
-│   ├── js/packages/sdk/         # Extended TypeScript SDK
-│   └── rs/                      # Rust SDK extensions
-└── examples/
-    └── nft/                     # NFT usage examples
-```
-
-### Integration Points
-
-**Existing Infrastructure Reuse**:
-- **BTKN Service**: Extended with NFT transaction type handlers
-- **LRC-20 Nodes**: Process NFT transactions using existing gossip protocols  
-- **Watchtowers**: Protect NFT TTXOs using identical revocation mechanisms
-- **Lightning Integration**: NFTs flow through existing Lightning infrastructure
-- **SO Indexing**: NFT metadata accessible through TTXO structure with optional local caching
-
-**New Components**:
-- **NFT Validation Logic**: Collection uniqueness and supply limit enforcement
-- **Metadata Parsing**: Extract and validate NFT metadata from TTXOs
-- **Indexing Services**: Optional services for NFT discovery and marketplace APIs
-
--- NFT Tokens table
-CREATE TABLE nft_tokens (
-    collection_identifier BYTEA NOT NULL CHECK (length(collection_identifier) = 32),
-    token_id VARCHAR(20) NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    description VARCHAR(1000),
-    image_url VARCHAR(500),
-    attributes JSONB,
-    current_owner BYTEA NOT NULL CHECK (length(current_owner) = 33),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    last_transferred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    
-    PRIMARY KEY (collection_identifier, token_id),
-    FOREIGN KEY (collection_identifier) REFERENCES nft_collections(collection_identifier),
-    INDEX idx_nft_tokens_owner (current_owner),
-    INDEX idx_nft_tokens_collection (collection_identifier),
-    INDEX idx_nft_tokens_created (created_at)
-);
-
--- NFT Transactions table
-CREATE TABLE nft_transactions (
-    transaction_hash BYTEA PRIMARY KEY CHECK (length(transaction_hash) = 32),
-    nft_transaction BYTEA NOT NULL, -- Serialized NftTransaction protobuf
-    transaction_type VARCHAR(20) NOT NULL CHECK (transaction_type IN ('CREATE_COLLECTION', 'MINT', 'TRANSFER')),
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    confirmed_at TIMESTAMP WITH TIME ZONE,
-    
-    INDEX idx_nft_transactions_type (transaction_type),
-    INDEX idx_nft_transactions_status (status),
-    INDEX idx_nft_transactions_created (created_at)
-);
-```
-
-#### Uniqueness Guarantees (Consolidated)
-
-See "Identifiers & Uniqueness" above for Phase 1 rules. Future hashed identifiers are optional and out-of-scope for initial consensus.
-4. **SO Validation**: Spark Operators validate uniqueness before signing
-
-#### Transfer Mechanism
-
-NFT transfers leverage Spark's existing statechain infrastructure:
-
-1. **Ownership Transfer**: Uses Spark's key tweaking mechanism
-2. **State Updates**: SOs update NFT ownership records
-3. **Atomicity**: Transfers are atomic using existing FROST signing
-4. **Instant Settlement**: Off-chain transfers with immediate finality
-5. **Provable Ownership**: Cryptographic proofs of NFT ownership
-
-## Rationale
-
-### Design Decisions
-
-#### BTKN Extension vs. Separate Protocol
-BTNFT extends the existing BTKN protocol rather than creating a separate system for several critical reasons:
-
-1. **Proven Security Model**: Inherits battle-tested FROST signing, revocation keys, and statechain transfers
-2. **Infrastructure Reuse**: Leverages existing LRC-20 nodes, watchtowers, and Lightning integration
-3. **Unified User Experience**: Same wallets, APIs, and transaction flows for tokens and NFTs
-4. **Development Efficiency**: Extends proven codebase rather than building from scratch
-5. **Network Effects**: NFTs immediately compatible with existing Spark ecosystem
-
-#### TTXO Metadata Embedding vs. External Storage (Phased)
-Phase 1: side-car only (no hash change). Future: optional embedding after hashing audit.
-Embedding (future) provides advantages:
-
-**Technical Benefits**:
-- **Atomic Operations**: Metadata and ownership changes happen in single transaction
-- **Consistency Guarantees**: No synchronization issues between metadata and ownership records
-- **Lightning Compatibility**: NFT metadata flows naturally through Lightning channels
-- **Simplified Architecture**: Single data structure handles both tokens and NFTs
-
-**Security Benefits**:
-- **Trustless Metadata**: Essential NFT data secured by Spark's cryptographic proofs
-- **Self-Custody**: Users maintain full control of their NFT assets on Spark Layer 2
-- **No External Dependencies**: Core ownership doesn't rely on external services
-- **Censorship Resistance**: NFT ownership preserved through decentralized infrastructure
-
-#### Collection-as-TTXO Model
-Representing collections as special TTXOs provides powerful capabilities:
-
-1. **Transferable Collections**: Collection ownership can be sold/transferred like any asset
-2. **Collection Management**: Collections can be managed through standard TTXO operations
-3. **Royalty Enforcement**: Collection TTXO can enforce creator royalties programmatically
-4. **Multi-sig Collections**: Multiple parties can co-own/manage collections
-5. **Lightning Collections**: Collections can be transferred via Lightning channels
-
-#### Hybrid Metadata Strategy
-Phased approach (Phase 1 side-car, potential Phase 2 embedding):
-
-**On-Chain (Phase 1 Core)**:
-- Ownership and transfer state only (via TokenOutputs)
-
-**Side-Car Indexed (Phase 1)**:
-- Collection identifiers & descriptive metadata (royalty %, recipient pubkey, mutability flag, attributes ≤50)
-- Token IDs, attributes, images (URL) and descriptions (length-capped)
-
-**Potential Future Embedding**:
-- All side-car metadata committed directly inside TokenOutput optional field
-
-**Off-Chain (IPFS/HTTP)**:
-- Large images and media files
-- Extended descriptions and documentation
-- Third-party metadata enrichments
-- External marketplace integrations
-
-This balances sovereignty with efficiency while ensuring core NFT functionality remains trustless.
-
-### Backwards Compatibility Analysis
-
-BTNFT introduces **zero breaking changes** to existing Spark functionality:
-
-**Protocol Compatibility**:
-- Existing BTKN tokens continue working unchanged
-- Same service endpoints with extended input type handling
-- Phase 1 does NOT modify TokenOutput hashing; future embedding gated on audit
-- All existing validation and security mechanisms preserved
-
-**Wallet Compatibility**:
-- Existing Spark wallets can ignore NFT metadata and function normally
-- Wallet updates can add NFT support without breaking existing features
-- Same key management and signing processes for all asset types
-
-**Infrastructure Compatibility**:
-- LRC-20 nodes process NFT transactions using existing gossip protocols
-- Watchtowers protect NFT TTXOs using identical revocation mechanisms
-- Lightning integration works automatically for NFT transfers
-- Spark Operators validate NFTs using extended but compatible logic
-
-### Lightning Network Integration Benefits
-
-BTNFT's deep Lightning integration enables unique capabilities not available in other NFT protocols:
-
-**Instant Micropayments**:
-- Pay per view for premium content NFTs
-- Streaming royalties to creators in real-time
-- Micro-licensing of digital assets
-- Pay-per-use gaming item rentals
-
-**Atomic Swaps**:
-- Trustless NFT-for-BTC/tokens exchanges
-- NFT-for-Bitcoin swaps without intermediaries
-- Cross-chain atomic swaps (via Lightning)
-- Decentralized NFT marketplace settlements
-
-**Privacy Benefits**:
-- Lightning payment privacy for NFT purchases (inherited from Lightning Network)
-- Onion routing obscures NFT transfer paths through Lightning channels
-- Private royalty payments to creators via Lightning micropayments
-- Pseudonymous participation (public keys don't reveal real-world identity)
-- Off-chain transfers reduce on-chain surveillance compared to Ethereum NFTs
-
-## Backwards Compatibility
-
-BTNFT introduces zero breaking changes to existing Spark functionality:
-
-- **Separate Protocol**: Independent service and message types
-- **Protocol Extension**: NFT functionality extends existing TTXO structure without breaking changes
-- **API Compatibility**: New endpoints do not affect existing APIs
-- **Wallet Compatibility**: Existing wallets continue working unchanged
-- **SO Compatibility**: New validation logic is additive, not replacement
-
-## Test Cases
-
-### Collection Creation
-```
-Input: NftCollectionCreateInput with valid creator key, name, and metadata
-Expected: Collection created with unique identifier, validated by SO consensus
-Validation: Collection appears in query_nft_metadata response
-```
-
-### NFT Minting
-```
-Input: NftMintInput with valid collection ID and unique token ID
-Expected: NFT created and assigned to specified owner
-Validation: NFT appears in owner's query_nfts_by_owner response
-```
-
-### NFT Transfer
-```
-Input: Valid NftTransferInput with existing NFT and new owner
-Expected: Ownership transferred atomically using Spark statechain
-Validation: query_nft_metadata shows new owner, old owner no longer owns NFT
-```
-
-### Uniqueness Enforcement
-```
-Input: Attempt to mint NFT with duplicate collection_identifier:token_id
-Expected: Transaction rejected by SOs during validation
-Validation: SO consensus validation prevents duplicate entry
-```
-
-
-## Security Considerations
-
-### Protocol-Level Security
-
-**Inherited Security Benefits**:
-BTNFT inherits Spark's proven security model without introducing new attack vectors:
-
-- **FROST Threshold Signing**: NFT transactions secured by same multi-party signature scheme as BTKN
-- **Statechain Security**: NFT ownership transfers use identical key deletion/regeneration mechanisms
-- **Revocation Protection**: NFT TTXOs protected by same revocation key and watchtower infrastructure
-- **Self-Custody**: Users maintain full control of NFT assets through proven cryptographic methods
-
-### NFT-Specific Security Analysis
-
-**Collection Security**:
-- **Creator Authority**: Only collection owner can mint NFTs (enforced via signature validation)
-- **Supply Enforcement**: SOs validate minting against collection supply limits
-- **Uniqueness Guarantees**: Collection IDs must be unique per creator (SO consensus validation)
-- **Immutability Options**: Collections can be created as immutable to prevent post-creation changes
-
-**Metadata Security**:
-- **Essential Data On-Chain**: Critical NFT properties stored within TTXO (trustless)
-- **Censorship Resistance**: Core metadata survives even if external services disappear  
-- **Integrity Verification**: Metadata changes require valid signatures from authorized parties
-- **Spark Layer 2**: NFT functionality remains fully operational within Spark ecosystem
-
-**Transfer Security**:
-- **Double-Spend Prevention**: Identical revocation mechanisms as BTKN tokens
-- **Atomic Operations**: Ownership and metadata changes happen in single transaction
-- **Lightning Security**: NFT Lightning transfers inherit existing payment channel security
-- **Key Management**: Same proven key aggregation and FROST signing as other Spark assets
-
-### Attack Vector Analysis
-
-**Potential NFT-Specific Attacks**:
-
-1. **Collection Hijacking**:
-   - **Risk**: Unauthorized minting in existing collections
-   - **Mitigation**: Creator signature validation and SO consensus enforcement
-      - **Severity**: Prevented by cryptographic validation
-
-2. **Supply Manipulation**:
-   - **Risk**: Exceeding stated collection supply limits
-   - **Mitigation**: SO validation against collection metadata during minting
-   - **Severity**: Prevented by consensus validation
-
-3. **Metadata Substitution**:
-   - **Risk**: Changing essential NFT properties post-creation
-   - **Mitigation**: Immutable collections and signature requirements for changes
-   - **Severity**: Configurable per collection (creator choice)
-
-4. **NFT Double-Spending**:
-   - **Risk**: Spending same NFT TTXO multiple times
-   - **Mitigation**: Existing revocation key and watchtower infrastructure
-   - **Severity**: Prevented by proven Spark mechanisms
-
-**Economic Attack Considerations**:
-- **Royalty Bypass**: Users can transfer NFTs directly without marketplace royalties (standard NFT limitation)
-- **Market Manipulation**: Standard NFT market risks not specific to protocol
-- **Creator Abandonment**: Collections remain functional even if creator disappears
-
-### Integration Security
-
-**Backwards Compatibility Security**:
-- **No New Attack Surface**: Extends existing protobuf structures without changing core protocols
-- **Isolated Validation**: NFT validation logic is additive and doesn't affect BTKN security
-- **Graceful Degradation**: System remains secure even if NFT features are disabled
-
-**Lightning Integration Security**:
-- **Channel Security**: NFT Lightning transfers inherit existing payment channel security model
-- **Atomic Settlement**: NFT transfers and Lightning payments settled atomically
-- **Privacy Preservation**: Lightning privacy benefits extend to NFT transactions
-
-
-### Audit Requirements
-
-**Pre-Deployment Security Review**:
-
-1. **Protocol Extension Audit**:
-   - Review NFT transaction validation logic
-   - Verify metadata embedding doesn't compromise TTXO security
-   - Validate SO consensus mechanisms for NFT operations
-
-2. **Integration Testing**:
-   - Comprehensive testing with existing BTKN functionality
-   - Lightning integration security verification
-   - Stress testing with malicious transaction attempts
-
-3. **Cryptographic Review**:
-   - Verify FROST signature integration for NFT transactions
-   - Review key management for collection and NFT operations
-   - Validate revocation key generation and management
-
-
-### Known Security Limitations
-
-**Acknowledged Trade-offs**:
-
-1. **Off-Chain Metadata Dependency**: 
-   - External URLs (IPFS/HTTP) may become unavailable
-   - **Mitigation**: Essential metadata stored on-chain in TTXO
-   - **Impact**: Visual/extended metadata may be lost, but ownership preserved
-
-2. **Creator Key Compromise**:
-   - Compromised creator keys could mint unauthorized NFTs
-   - **Mitigation**: Multi-sig collection creation and immutable collections
-   - **Impact**: Similar to any other digital signature system
-
-**Security vs. Usability Balance**:
-BTNFT prioritizes security through infrastructure reuse while maintaining usability through familiar BTKN transaction patterns. The protocol makes conservative choices that favor security over advanced features where trade-offs are necessary.
-
-## Implementation Timeline
-
-### Development Phases
-
-**Phase 1: Protocol Foundation (1 week)**
-- Extend TokenTransaction protobuf with NFT message types
-- Implement NFT validation logic in existing BTKN service endpoints  
-- Add SO consensus mechanisms for collection uniqueness and supply limits
-- Update LRC-20 nodes to handle NFT metadata in gossip network
-- Comprehensive unit testing of all NFT transaction types
-
-**Phase 2: Integration & SDK (1 week)**
-- Extend TypeScript SDK with complete NFT transaction support
-- Update existing Spark wallets to display and manage NFT TTXOs
-- Implement GraphQL API extensions for NFT queries and marketplace integration
-- Lightning integration testing for NFT conditional transfers
-- Integration testing with existing BTKN functionality
-
-**Phase 3: Production Deployment (2 weeks)**
-- Security audit coordination and vulnerability remediation
-- Performance testing and optimization for high-volume NFT operations
-- Documentation completion and developer guides
-- Community review period and feedback incorporation
-- Coordinated deployment across SO network
-
-**Total Timeline: 4 weeks** from development start to mainnet deployment
-
-### Success Metrics
-
-**Technical Performance Targets**:
-- **Transaction Throughput**: >1,000 NFT operations per second (same as BTKN)
-- **Transfer Latency**: <100ms average response time for NFT transfers
-- **Storage Efficiency**: Minimal TTXO size increase with embedded metadata
-- **Lightning Compatibility**: 100% compatibility with existing Lightning infrastructure
-
-**Adoption Metrics (First 6 Months)**:
-- **Collections Created**: 500+ unique NFT collections
-- **NFTs Minted**: 50,000+ individual tokens across all collections
-- **Active Users**: 2,000+ unique addresses performing NFT operations
-- **Lightning Transfers**: 10,000+ NFT transfers via Lightning channels
-
-**Ecosystem Integration Targets**:
-- **Wallet Support**: 3+ major Spark wallets with full NFT functionality
-- **Marketplace Integration**: 2+ NFT marketplaces supporting BTNFT
-- **Developer Adoption**: 10+ projects building on BTNFT infrastructure
-- **Community Growth**: 1,000+ Discord/forum members actively discussing NFTs
-
-### Risk Mitigation
-
-**Technical Risks**:
-- **Integration Complexity**: Mitigated by extending proven BTKN infrastructure
-- **Performance Impact**: Minimized through efficient TTXO metadata embedding
-- **Security Vulnerabilities**: Addressed through comprehensive audit and testing
-
-**Adoption Risks**:
-- **Developer Adoption**: Mitigated by familiar APIs and extensive documentation
-- **User Experience**: Addressed through seamless wallet integration and instant transfers
-- **Market Competition**: Differentiated by unique Lightning integration and Bitcoin nativity
+The NFT market presents a massive opportunity for Bitcoin Layer 2 adoption, with over $7.9 billion in market cap and approximately $2.4 billion in trading volume across all blockchains. However, most NFT activity remains trapped on expensive, slow networks that charge high gas fees and suffer from poor user experience.
+
+Spark's unique architecture solves these fundamental problems by providing the ideal foundation for Bitcoin-native NFTs. Users can enjoy instant transfers through proven statechain technology that delivers sub-second NFT movements without any gas fees, while maintaining complete self-custody through Bitcoin's security guarantees. Perhaps most importantly, BTNFT enables native Lightning Network compatibility, allowing NFT micropayments and streaming capabilities that simply don't exist on other platforms.
+
+By building on the battle-tested BTKN and LRC-20 foundation, BTNFT positions Spark as the premier platform for Bitcoin NFTs while demonstrating how Bitcoin can evolve beyond simple value transfer to support sophisticated digital assets and applications.
+
+## Technical Architecture
+
+BTNFT extends the proven BTKN protocol by adding NFT-specific transaction types to the existing TokenTransaction model. This approach ensures seamless compatibility with existing wallets, services, and Lightning integration rather than fragmenting the ecosystem with separate protocols.
+
+The core design follows five fundamental principles that make BTNFT both powerful and practical. First, NFTs are treated as specialized BTKN tokens with unique metadata, ensuring they inherit all existing security and functionality. Second, NFT data integrates directly within the proven Token Transaction Output structure, maintaining consistency across the system. Third, the same Start/Sign/Finalize transaction flow that users know from regular BTKN tokens applies to NFTs, eliminating learning curves. Fourth, NFTs flow naturally through Lightning channels using existing infrastructure, enabling unprecedented payment and streaming capabilities. Finally, users maintain complete self-custody through the same proven cryptographic mechanisms that secure all Spark assets.
+
+### Metadata Strategy: The Side-Car Approach Explained
+
+BTNFT implements a carefully designed side-car approach to metadata handling that prioritizes security and compatibility above all else. This isn't just a technical decision - it's a strategic choice that allows us to deliver full NFT functionality today while keeping the proven BTKN foundation completely untouched and rock-solid.
+
+The side-car approach works like this: instead of modifying the core `TokenTransaction` or `TokenOutput` structures that have been battle-tested in production, we keep NFT metadata in a separate but linked system. Think of it like having a secure vault (the BTKN TokenOutput) that holds the actual ownership rights, while keeping a detailed catalog (the NFT metadata) that describes what's in the vault. The catalog and vault are connected, but the vault's security doesn't depend on the catalog being perfect.
+
+This means ownership remains purely within the base TTXO structure using all the same cryptographic proofs and security mechanisms that protect regular BTKN tokens. Meanwhile, rich metadata like names, descriptions, images, and attributes live in an associated index that's keyed by collection and token identifiers. The beauty of this approach is that even if something happened to the metadata system, the ownership rights would remain completely secure and recoverable.
+
+Our side-car implementation uses the `NftOutputRecord` structure that elegantly combines both worlds. Each record contains a standard `TokenOutput` that handles all the Bitcoin-secured ownership mechanics, plus `NftMetadata` that provides all the rich information that makes each NFT unique and interesting. A transaction hash links these together, creating a tamper-evident connection between ownership and metadata.
+
+All metadata fields include strict validation limits that prevent denial-of-service attacks while supporting real-world usage patterns. Collection IDs are limited to 50 characters, token IDs to 20 characters, descriptions to 1000 characters, and image URLs to 500 characters. Each NFT can have up to 50 attributes, and batch minting operations are capped at 50 NFTs per transaction. These limits aren't arbitrary - they're carefully chosen based on actual NFT usage patterns and system performance requirements.
+
+The side-car approach also provides a clear path for future evolution. A future phase may embed an optional `nft_metadata` field directly within `TokenOutput`, but only after extensive hashing determinism reviews and comprehensive security audits. This conservative approach means we can deliver NFT functionality immediately while keeping all our options open for even deeper integration when the time is right.
+
+### NFT Service Architecture: Extending What Works
+
+BTNFT introduces a dedicated `SparkNftService` that provides all NFT functionality through clean, purpose-built endpoints. This isn't a replacement for existing services - it's an extension that works alongside everything users already know and trust. The service includes two core transaction operations (`start_nft_transaction` and `commit_nft_transaction`) that follow the exact same two-phase pattern that BTKN users are familiar with, plus four specialized query operations for discovering and managing NFT data.
+
+The transaction operations work identically to existing BTKN flows. When you want to create a collection, mint an NFT, or transfer ownership, you start by calling `start_nft_transaction` with your NFT intent and authorization signatures. Spark Operators validate your request, coordinate among themselves, and return a fully prepared transaction along with keyshare information. Then you finalize everything with `commit_nft_transaction`, providing the final signatures from all operators to make your NFT operation permanent.
+
+The query operations provide comprehensive NFT discovery and management capabilities. `query_nft_collections` helps you find collections by creator, identifier, or network, perfect for marketplace browsing and creator portfolio displays. `query_nft_tokens` finds individual NFTs across collections, supporting portfolio tracking and marketplace search functionality. `query_nft_outputs` gives you access to the underlying Bitcoin-secured ownership layer, essential for wallet management and ownership verification. Finally, `query_nft_metadata` provides pure NFT information without ownership complexity, optimized for gallery displays and attribute browsing.
+
+What makes this architecture brilliant is how the side-car approach enables clean separation of concerns. The transaction operations handle ownership changes through proven BTKN mechanisms, while query operations can access either the ownership layer, the metadata layer, or both combined. This flexibility means different applications can interact with exactly the data they need without unnecessary complexity.
+
+### Lightning Network Integration: Revolutionary NFT Capabilities
+
+BTNFT's Lightning Network integration creates entirely new possibilities for NFT usage that don't exist on other platforms. Unlike systems where NFTs are large, immobile assets, BTNFT NFTs can participate in conditional payment workflows through Lightning channels. The ownership outputs, rather than bulky metadata, flow through payment channels, enabling rapid state changes and micropayment patterns.
+
+This architecture enables fascinating use cases that showcase Bitcoin's potential beyond simple value transfer. Streaming access becomes possible where users pay satoshis per minute for premium content NFTs, automatically unlocking access as payments flow. Gaming assets can be transferred instantly between players with Lightning payments, creating fluid in-game economies. Royalty distribution happens automatically on Lightning-enabled marketplaces, ensuring creators receive payments in real-time as their works are traded.
+
+Perhaps most importantly, Lightning integration brings privacy benefits to NFT trading. Payment paths remain obscured through onion routing, and off-chain transfers reduce on-chain surveillance compared to Ethereum NFTs where every transaction is permanently visible. This combination of speed, low cost, and privacy creates a compelling alternative to existing NFT platforms.
+
+## Infrastructure Changes: What Each Component Needs
+
+Implementing BTNFT requires coordinated updates across Spark's infrastructure, but the beauty of the side-car approach is that these changes are purely additive - nothing existing gets broken or replaced. Each component in the ecosystem gets enhanced with new NFT capabilities while continuing to handle regular BTKN operations exactly as before.
+
+### Spark Core Repository Changes
+
+The core Spark repository needs to be extended with the new NFT service definitions and validation logic, but these additions work alongside existing functionality rather than replacing anything. The `SparkNftService` gets added as a separate service with its own endpoints, while existing BTKN services continue operating unchanged. This separation ensures that NFT functionality can be developed, tested, and deployed without any risk to existing operations.
+
+The core changes include adding the NFT protobuf definitions that we've carefully designed, implementing the service handlers that process NFT requests, and extending the validation logic to handle NFT-specific rules like collection uniqueness and supply limits. All of this builds on top of the existing FROST signing infrastructure, transaction processing pipeline, and security mechanisms that users already trust.
+
+In general, the side-car approach means the core `TokenTransaction` and `TokenOutput` structures remain completely unchanged in Phase 1. This eliminates any risk of introducing bugs or compatibility issues in the most critical parts of the system. NFT functionality gets layered on top through clean interfaces rather than modifying proven code paths.
+
+### Spark Operator Updates: The Consensus Layer
+
+Spark Operators need the most significant updates because they handle validation and consensus for all NFT operations. However, these updates follow the same patterns that SOs already use for BTKN validation, so they're extending familiar functionality rather than implementing something completely new.
+
+Each Spark Operator needs to add NFT-specific validation functions that check collection uniqueness, verify supply limits, validate token ID uniqueness within collections, and enforce royalty and mutability rules. These validation functions run during the standard transaction processing flow, so they integrate seamlessly with existing FROST signing and consensus mechanisms.
+
+The operators also need database schema updates to track NFT collections and tokens locally. These databases serve as operational caches that improve query performance and enable the discovery functionality that marketplaces and wallets need. Importantly, these databases don't affect consensus or security - they're purely for operational efficiency, with the real source of truth remaining in the signed transactions on the statechain.
+
+All Spark Operators must deploy these updates in a coordinated fashion because NFT validation requires consensus across the operator network. If only some operators understood NFT transactions, the network couldn't reach agreement on their validity. This coordinated deployment is standard practice for Spark protocol upgrades and ensures the network maintains consistency.
+
+### LRC-20 Node Enhancements: Gossip and Data Availability
+
+LRC-20 nodes need updates to handle NFT metadata in the gossip network, but these changes follow the exact same patterns used for regular BTKN transactions. The nodes already know how to gossip transaction data, validate signatures, and maintain data availability - they just need to recognize and process the additional NFT metadata that gets attached to transactions.
+
+The gossip protocol extensions enable NFT metadata to flow through the network alongside transaction data. When an LRC-20 node receives a transaction with NFT metadata, it validates the metadata format, stores it for availability, and forwards it to other nodes just like any other transaction data. This ensures that NFT information remains accessible even if individual operators go offline.
+
+These nodes also provide the data availability layer that enables the query operations in the NFT service. When a wallet wants to display a user's NFT collection or a marketplace wants to show available NFTs, they can query the LRC-20 network to get comprehensive metadata without depending on any single operator. This distributed approach ensures robust data availability without creating central points of failure.
+
+### State Chain Protocol: No Changes Needed
+
+Here's where the side-car approach really shines - the core state chain protocol needs absolutely no changes. The statechain already handles TTXO ownership transfers, key rotation, revocation mechanisms, and all the cryptographic operations that make Spark secure. NFTs use these exact same mechanisms for ownership, so there's nothing new for the statechain to learn.
+
+When an NFT gets transferred, what actually happens under the hood is a standard TTXO ownership change using the same key tweaking and threshold signing that protects regular BTKN tokens. The NFT metadata travels alongside this ownership change through the side-car system, but the statechain itself only sees and processes a normal ownership transfer.
+
+This means all the battle-tested security properties of the statechain automatically extend to NFTs. The same revocation keys protect against operator misbehavior, the same watchtower infrastructure guards against attacks, and the same cryptographic proofs ensure ownership validity. NFT users get enterprise-grade security without any new attack surfaces or experimental protocols.
+
+## Development Timeline and Deployment Strategy
+
+The BTNFT implementation follows a carefully planned four-week timeline that ensures thorough testing and smooth deployment across the entire Spark ecosystem. This timeline reflects the complexity of coordinating updates across multiple systems while maintaining the high security and reliability standards that Spark users expect.
+
+### Phase 1: Protocol Foundation (Week 1)
+
+Week one gets the core protocol extensions right by implementing fundamental NFT operations without rushing user-facing features. We start by extending protobuf definitions with our NFT message types, then build service handlers that process these transactions within existing Spark infrastructure.
+
+Spark Operators receive validation logic for collection uniqueness, supply limits, and token ID validation - the consensus layer that keeps everything secure. LRC-20 nodes get gossip protocol updates to handle NFT metadata alongside transaction data, ensuring information flows properly even when nodes go offline.
+
+The week wraps with comprehensive unit testing that proves every NFT transaction type works flawlessly with existing BTKN functionality, confirming our side-car approach adds capabilities without breaking anything.
+
+### Phase 2: Integration and SDK Development (Week 2)
+
+Week two brings BTNFT to developers through SDK updates and API extensions. The TypeScript SDK gets complete NFT support with helper functions for collections, minting, transfers, and queries - following familiar BTKN patterns that make development natural.
+
+Spark wallets receive updates to display and manage NFT TTXOs through intuitive interfaces users already trust, making NFT management feel like a seamless extension rather than separate functionality. GraphQL API extensions provide efficient marketplace integration with browsing, filtering, and discovery capabilities designed for high-traffic applications.
+
+Lightning integration testing validates our innovative conditional transfer capabilities, ensuring streaming and micropayment use cases actually deliver the revolutionary functionality we've designed.
+
+### Phase 3: Production Deployment (Weeks 3-4)
+
+The final weeks handle critical mainnet deployment tasks. Security audits ensure every aspect meets Spark's standards, covering both NFT-specific code and integration points to prevent any weakening of existing systems.
+
+Performance testing optimizes high-volume operations through stress testing collections, batch minting, concurrent transfers, and marketplace query patterns. We ensure BTNFT handles real-world usage without degrading BTKN performance.
+
+Documentation completion provides developer guides and API references, while community review incorporates feedback from developers, operators, and users. The coordinated Spark Operator network deployment requires careful synchronization since all operators must update simultaneously for consensus, with rollback planning ensuring quick issue resolution.
+
+### Database and Storage: Performance Without Compromising Security
+
+Spark Operators implement local NFT indexing for speed, but here's the key - protocol security never depends on these databases. This separation means operators get lightning-fast queries while maintaining bulletproof security through statechain cryptographic proofs.
+
+The PostgreSQL schema reflects real-world usage with collections storing creator keys, metadata, and royalty info, while tokens link through foreign keys with flexible JSON attributes. These databases serve as operational caches, not sources of truth - wallets get instant portfolio displays and marketplaces get millisecond queries, but ownership validation relies on tamper-proof signed transactions.
+
+Protocol validity stays anchored in TokenTransactions and the statechain, so database corruption affects performance, not security. The beauty? If an operator's database gets wiped, they rebuild it entirely from transaction history without losing data or compromising security - it's just a reconstructible performance layer over the distributed secure infrastructure.
+
+## Security Model and Analysis
+
+BTNFT builds entirely on Spark's proven foundation, inheriting FROST threshold signing, statechain ownership transfers, and watchtower protection without introducing new attack surfaces. Collection creators control minting through cryptographic signatures, while Spark Operators enforce supply limits and uniqueness through consensus validation.
+
+The layered security approach keeps essential ownership within TTXO cryptographic proofs while metadata lives in side-car indices. Off-chain content uses IPFS or HTTP with optional hash references, accepting standard NFT external dependency risks while keeping core ownership bulletproof.
+
+Protocol design prevents collection hijacking through creator validation, supply manipulation through consensus enforcement, and double-spending through existing revocation infrastructure. Standard market risks like royalty bypass and wash trading represent business challenges rather than protocol vulnerabilities - collections remain functional even if creators disappear, protecting user investments.
+
+## Lightning Capabilities and Use Cases
+
+The Lightning Network integration creates unprecedented capabilities for Bitcoin NFTs that showcase the technology's potential beyond simple payments. Unlike other NFT platforms where assets remain static until explicitly traded, BTNFT enables dynamic, programmable interactions through Lightning's conditional payment mechanisms.
+
+Streaming access represents one of the most innovative use cases, where premium content NFTs unlock automatically as users stream micropayments. This enables new business models for content creators who can monetize their work directly without platform intermediaries, receiving payments in real-time as users consume content. The granular payment capability means creators can charge per minute, per view, or per interaction, creating flexible monetization strategies impossible on traditional platforms.
+
+Gaming applications become particularly compelling when items can be transferred instantly with Lightning payments. Players can rent powerful items for specific battles, lending them back automatically when rental periods expire. Cross-game asset interoperability becomes practical when transfers happen instantly and cheaply, allowing players to move valuable items between different gaming ecosystems. Tournament organizers can implement automatic prize distribution where winning NFTs transfer to victors simultaneously with Lightning prize payments.
+
+Utility tokens gain new functionality when combined with Lightning micropayments. Event tickets can unlock access automatically upon payment, membership tokens can enable recurring subscriptions through streaming payments, and certificate systems can validate credentials while receiving micropayments for verification services. These applications showcase how NFTs can become active, programmable assets rather than static collectibles.
+
+## Success Metrics and Timeline
+
+The success of BTNFT will be measured through both technical performance and ecosystem adoption metrics that demonstrate real-world utility. Technical targets include maintaining transaction throughput above 1,000 NFT operations per second, matching existing BTKN performance while keeping transfer latency below 100 milliseconds for excellent user experience. Storage efficiency remains crucial, with minimal TTXO size increases even with embedded metadata, and 100% compatibility with existing Lightning infrastructure ensuring seamless integration.
+
+Adoption metrics for the first six months include ambitious but achievable targets that would establish BTNFT as a significant player in the NFT space. The goal of 500 unique NFT collections would demonstrate creator adoption across diverse use cases, while 50,000 individual tokens would show meaningful user engagement. Active user metrics targeting 2,000 unique addresses performing NFT operations would indicate healthy ecosystem growth, and 10,000 NFT transfers via Lightning channels would prove the unique capabilities are being utilized.
+
+Ecosystem integration targets focus on building the infrastructure necessary for long-term success. Support from three major Spark wallets with full NFT functionality would ensure users have quality tools available, while integration with two NFT marketplaces would provide liquidity and discovery mechanisms. Developer adoption through 10 projects building on BTNFT infrastructure would create momentum for continued growth, and community engagement targeting 1,000 Discord and forum members would establish the social foundation for a thriving ecosystem.
 
 ## Conclusion
 
-BTNFT represents a natural evolution of the Spark ecosystem, bringing native NFT functionality to Bitcoin through a proven, secure, and Lightning-compatible architecture. By extending the existing BTKN protocol rather than creating a separate system, BTNFT leverages Spark's battle-tested infrastructure while enabling new use cases and applications.
+BTNFT demonstrates Bitcoin's evolution beyond simple payments to sophisticated digital assets while maintaining trustlessness and self-custody. By extending proven BTKN protocol rather than fragmenting the ecosystem, it inherits battle-tested security, existing infrastructure, and established user bases.
 
-### Key Advantages
+Lightning integration creates genuinely unique capabilities - instant micropayments, streaming access, automatic royalties, and privacy-preserving transfers - that position BTNFT as a foundation for innovative applications impossible on other platforms. The conservative side-car approach enables safe deployment while preserving future integration options.
 
-**Technical Excellence**:
-- **Bitcoin Native**: True Bitcoin NFTs operating on proven Layer 2 infrastructure
-- **Lightning Compatible**: Instant NFT transfers with micropayment capabilities  
-- **Self-Custodial**: Users maintain full control through proven statechain technology
-- **Battle-Tested Security**: Inherits FROST signing, revocation keys, and watchtower protection
-
-**Economic Benefits**:
-- **Near-Zero Fees**: Eliminates gas costs that plague Ethereum NFT markets
-- **Instant Settlement**: Sub-second transfers enable new use cases and better UX
-- **Creator Empowerment**: Programmable royalties and Lightning streaming payments
-- **Marketplace Innovation**: Atomic swaps and trustless exchange capabilities
-
-**Ecosystem Impact**:
-- **Network Effects**: Immediate compatibility with existing Spark infrastructure
-- **Developer Friendly**: Familiar APIs and extensive tooling from day one
-- **User Adoption**: Leverages existing Spark user base and wallet integrations
-- **Innovation Platform**: Foundation for gaming, streaming, and micropayment applications
-
-### conclusion
-
-### Batch Mint Limit & DoS Rationale
-
-Parameter (Phase 1 canonical): `NftBatchMintInput.mint_requests` maximum = 50.
-
-Rationale:
-1. Performance Bound: Caps worst-case per-transaction validation and signature work to keep latency near BTKN baseline (< single signing round SLA impact).
-2. Memory Safety: Limits in-flight metadata object allocations; prevents oversized protobuf messages causing GC or allocator pressure.
-3. Fairness: Prevents a single client from monopolizing operator signing pipeline with an extreme batch.
-4. Watchtower Load: Bounds new revocation commitments per transaction, keeping watchtower diffusion predictable.
-5. Gossip / Propagation: Ensures serialized transaction + side-car references stay below target relay size, avoiding fragmentation.
-6. Supply Race Mitigation: Smaller atomic mint groups reduce contention when multiple minters race near max_supply.
-7. Audit Simplicity: Easier to reason about uniqueness & supply invariants in bounded atomic sets.
-
-Configurability: Operators MAY adopt a lower runtime cap; raising above 50 requires performance profiling + audit sign-off. If a future protocol revision proposes >50 it MUST include new latency & memory benchmarks.
-
-BTNFT positions the Spark state-chain beyond simple value transfer while maintaining its core principles of trustlessness and self-custody. The protocol's Lightning integration creates unique capabilities unavailable in other NFT ecosystems, potentially capturing significant market share from existing platforms.
-
-
-
+BTNFT positions Spark to capture significant NFT market share through superior user experience: instant transfers, unique Lightning capabilities, and true Bitcoin nativity. This creates a foundation for gaming, streaming, and utility applications that could drive broader Bitcoin adoption while proving the network's evolution into a platform for innovative financial applications.
 
 ## References
 
@@ -770,4 +175,3 @@ BTNFT positions the Spark state-chain beyond simple value transfer while maintai
 6. **Lightning Network Specification**: https://github.com/lightning/bolts
 7. **ERC-721 NFT Standard**: https://eips.ethereum.org/EIPS/eip-721 (for comparison)
 8. **Bitcoin Improvement Proposals**: https://github.com/bitcoin/bips
-
