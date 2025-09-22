@@ -25,10 +25,12 @@ option go_package = "github.com/lightsparkdev/spark/proto/spark_nft";
 // and fee-free transactions using proven Spark architecture.
 service SparkNftService {
     // NFT transaction flow 
+    // Both main BTKN and side car architecture
     rpc start_nft_transaction(StartNftTransactionRequest) returns (StartNftTransactionResponse) {}
     rpc commit_nft_transaction(CommitNftTransactionRequest) returns (CommitNftTransactionResponse) {}
     
     // Discovery and marketplace queries 
+    //size car architecture
     rpc query_nft_collections(QueryNftCollectionsRequest) returns (QueryNftCollectionsResponse) {}
     rpc query_nft_tokens(QueryNftTokensRequest) returns (QueryNftTokensResponse) {}
     rpc query_nft_outputs(QueryNftOutputsRequest) returns (QueryNftOutputsResponse) {}
@@ -68,6 +70,8 @@ message NftTransaction {
 // Combined structure that provides both secure ownership through BTKN
 // infrastructure and rich NFT metadata. Links Bitcoin-secured ownership
 // with comprehensive token information and attributes.
+
+// core side car architecture
 message NftOutputRecord {
     spark_token.TokenOutput base_output = 1; // Bitcoin-secured ownership foundation
     NftMetadata metadata = 2;                // NFT-specific information and attributes
@@ -261,7 +265,7 @@ message StartNftTransactionResponse {
 message CommitNftTransactionRequest {
     NftTransaction final_nft_transaction = 1;              // The transaction to commit
     bytes final_nft_transaction_hash = 2 [(validate.rules).bytes.len = 32];   // Transaction fingerprint
-    repeated NftTransactionSignature nft_signatures_per_operator = 3;         // SO approvals
+    repeated spark_token.InputTtxoSignaturesPerOperator nft_signatures_per_operator = 3;         // SO approvals
     bytes owner_identity_public_key = 4 [(validate.rules).bytes.len = 33];    // Your identity
 }
 
